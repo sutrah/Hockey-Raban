@@ -18,7 +18,7 @@ async function load() {
   const q = sql => { const r = db.exec(sql)[0]; return r ? r.values.map(v => Object.fromEntries(r.columns.map((c, i) => [c, v[i]]))) : []; };
   for (const t of ['equipes', 'joueurs', 'matchs', 'compositions', 'buts', 'buts_sur_glace', 'penalites', 'tirs', 'engagements', 'gardiens_presence', 'staff']) D[t] = q(`SELECT * FROM ${t}`);
   D.eq = Object.fromEntries(D.equipes.map(e => [e.id, e]));
-  D.ab = Object.fromEntries(D.equipes.map(e => [e.abreviation, e]));
+
   D.j = Object.fromEntries(D.joueurs.map(j => [j.id, j.nom]));
   D.m = Object.fromEntries(D.matchs.map(m => [m.id, m]));
   D.matchs.sort((a, b) => a.date.localeCompare(b.date));
@@ -26,6 +26,8 @@ async function load() {
   D.finis = D.matchs.filter(m => m.etat === 'T');
   D.joues = D.finis.filter(m => m.saison === CUR && m.phase === 'P');
   D.actuelles = new Set(D.matchs.filter(m => m.saison === CUR).flatMap(m => [m.dom_id, m.ext_id]));
+  // abréviation -> équipe ; en cas de doublon, l'équipe engagée cette saison l'emporte
+  D.ab = {}; D.equipes.filter(e => !D.actuelles.has(e.id)).concat(D.equipes.filter(e => D.actuelles.has(e.id))).forEach(e => D.ab[e.abreviation] = e);
   // parcours de chaque joueur par saison et par équipe (toutes phases)
   D.car = {};
   const car = (j, mid, eq) => { const m = D.m[mid], a = D.car[j] = D.car[j] || {}, k = m.saison + '|' + eq; return a[k] = a[k] || { s: m.saison, eq, mj: 0, b: 0, a: 0, sec: 0, enc: 0 }; };

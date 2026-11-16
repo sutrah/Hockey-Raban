@@ -1,10 +1,11 @@
 """Construit docs/data/d2.sqlite à partir de data/raw/*.json (schéma portable vers Postgres/MySQL)."""
-import glob, json, os, sqlite3
+import glob, json, os, re, sqlite3
 HERE = os.path.dirname(os.path.abspath(__file__))
 RAW, DB = f"{HERE}/data/raw", f"{HERE}/docs/data/d2.sqlite"
 
 SCHEMA = """
-CREATE TABLE equipes(id INTEGER PRIMARY KEY, abreviation TEXT, nom_court TEXT, nom TEXT);
+CREATE TABLE equipes(id INTEGER PRIMARY KEY, abreviation TEXT, nom_court TEXT, nom TEXT,
+  club TEXT);          -- code fédéral du club : un même club change parfois d'identifiant d'équipe d'une saison à l'autre
 CREATE TABLE joueurs(id INTEGER PRIMARY KEY, nom TEXT, licence TEXT);
 CREATE TABLE matchs(id INTEGER PRIMARY KEY,
   saison INTEGER,      -- 2027 = saison 2026-2027
@@ -44,12 +45,15 @@ def main():
         if not p: return None
         db.execute("INSERT OR IGNORE INTO joueurs VALUES(?,?,?)", (p["id"], p["nom_complet"], p.get("code_adherent")))
         return p["id"]
+    clubs = {}
     for ph in sorted(json.load(open(f"{RAW}/phases.json")), key=lambda p: p["saison"]):
         fichier = f"{RAW}/rencontres_{ph['phase_id']}.json"
         if not os.path.exists(fichier): continue      # phase pas encore téléchargée
         for m in json.load(open(fichier)):
-            for t in (m["receveur"], m["visiteur"]):   # le nom le plus récent de l'équipe l'emporte
-                db.execute("INSERT OR REPLACE INTO equipes VALUES(?,?,?,?)", (t["id"], t["abreviation"], t["libelle_court"], t["libelle_complet"]))
+            for t in (m["receveur"], m["visiteur"]):
+                club = re.match(r"\s*(\d+)", t["libelle"]).group(1)
+                clubs[club] = t["id"]                    # l'identifiant le plus récent du club l'emporte
+                db.execute("INSERT OR REPLACE INTO equipes VALUES(?,?,?,?,?)", (t["id"], t["abreviation"], t["libelle_court"], t["libelle_complet"], club))
             sc = {s["equipe_id"]: s["score"] for s in m["score"]}
             dom, ext = m["receveur"]["id"], m["visiteur"]["id"]
             played = m["etat"] == "T"
@@ -97,6 +101,15 @@ def main():
         for s in d.get("staffs") or []:
             db.execute("INSERT INTO staff VALUES(?,?,?,?)", (mid, s["equipe_id"], f'{s["nom"]} {s["prenom"]}', (s.get("attributs") or {}).get("libelle")))
         db.execute("UPDATE matchs SET spectateurs=?, detail_tirs=? WHERE id=?", (d.get("nombre_spectateurs"), 1 if ntir > 10 else 0, mid))
+    # un seul identifiant par club sur toutes les saisons (Reims, Évry-Viry, Français Volants... en ont changé)
+    for old, club in db.execute("SELECT id, club FROM equipes").fetchall():
+        new = clubs[club]
+        if new == old: continue
+        for tbl, col in (("matchs", "dom_id"), ("matchs", "ext_id"), ("compositions", "equipe_id"), ("buts", "equipe_id"), ("buts_sur_glace", "equipe_id"),
+                         ("penalites", "equipe_id"), ("tirs", "equipe_id"), ("engagements", "equipe_gagnante_id"), ("gardiens_presence", "equipe_id"),
+                         ("temps_morts", "equipe_id"), ("staff", "equipe_id")):
+            db.execute(f"UPDATE {tbl} SET {col}=? WHERE {col}=?", (new, old))
+        db.execute("DELETE FROM equipes WHERE id=?", (old,))
     db.commit()
     for t in ("equipes","joueurs","matchs","compositions","buts","buts_sur_glace","penalites","tirs","engagements","gardiens_presence","staff"):
         print(f"{t:20}", db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0])

@@ -6,7 +6,11 @@ RAW, DB = f"{HERE}/data/raw", f"{HERE}/docs/data/d2.sqlite"
 SCHEMA = """
 CREATE TABLE equipes(id INTEGER PRIMARY KEY, abreviation TEXT, nom_court TEXT, nom TEXT);
 CREATE TABLE joueurs(id INTEGER PRIMARY KEY, nom TEXT, licence TEXT);
-CREATE TABLE matchs(id INTEGER PRIMARY KEY, journee INTEGER, date TEXT, etat TEXT,
+CREATE TABLE matchs(id INTEGER PRIMARY KEY,
+  saison INTEGER,      -- 2027 = saison 2026-2027
+  phase TEXT,          -- P = saison régulière, T = séries pour le titre, C = séries pour le maintien
+  tour TEXT,           -- libellé du tour en séries (Quarts de finale...)
+  journee INTEGER, date TEXT, etat TEXT,
   dom_id INTEGER, ext_id INTEGER, buts_dom INTEGER, buts_ext INTEGER,
   fin TEXT,            -- S = temps réglementaire, PRL = prolongation, TAB = tirs au but
   patinoire TEXT, spectateurs INTEGER,
@@ -36,21 +40,26 @@ def periode(t, duree=1200):
 def main():
     if os.path.exists(DB): os.remove(DB)
     db = sqlite3.connect(DB); db.executescript(SCHEMA)
-    for t in json.load(open(f"{RAW}/equipes.json")):
-        db.execute("INSERT INTO equipes VALUES(?,?,?,?)", (t["id"], t["abreviation"], t["libelle_court"], t["libelle_complet"]))
     def pid(p):   # identifiant stable de la personne
         if not p: return None
         db.execute("INSERT OR IGNORE INTO joueurs VALUES(?,?,?)", (p["id"], p["nom_complet"], p.get("code_adherent")))
         return p["id"]
-    for m in json.load(open(f"{RAW}/rencontres.json")):
-        sc = {s["equipe_id"]: s["score"] for s in m["score"]}
-        dom, ext = m["receveur"]["id"], m["visiteur"]["id"]
-        played = m["etat"] == "T"
-        db.execute("INSERT INTO matchs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (m["id"], m["tour"], m["date_rencontre"], m["etat"],
-            dom, ext, sc.get(dom) if played else None, sc.get(ext) if played else None,
-            m["victoire_par"] if played else None, (m.get("lieu_de_pratique") or {}).get("nom"), None, 0))
+    for ph in sorted(json.load(open(f"{RAW}/phases.json")), key=lambda p: p["saison"]):
+        fichier = f"{RAW}/rencontres_{ph['phase_id']}.json"
+        if not os.path.exists(fichier): continue      # phase pas encore téléchargée
+        for m in json.load(open(fichier)):
+            for t in (m["receveur"], m["visiteur"]):   # le nom le plus récent de l'équipe l'emporte
+                db.execute("INSERT OR REPLACE INTO equipes VALUES(?,?,?,?)", (t["id"], t["abreviation"], t["libelle_court"], t["libelle_complet"]))
+            sc = {s["equipe_id"]: s["score"] for s in m["score"]}
+            dom, ext = m["receveur"]["id"], m["visiteur"]["id"]
+            played = m["etat"] == "T"
+            db.execute("INSERT OR REPLACE INTO matchs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (m["id"], ph["saison"], ph["type"], m.get("tour_libelle"),
+                m["tour"], m["date_rencontre"], m["etat"],
+                dom, ext, sc.get(dom) if played else None, sc.get(ext) if played else None,
+                m["victoire_par"] if played else None, (m.get("lieu_de_pratique") or {}).get("nom"), None, 0))
     for f in sorted(glob.glob(f"{RAW}/match_*.json")):
         d = json.load(open(f)); mid = int(f.split("_")[-1][:-5])
+        if not db.execute("SELECT 1 FROM matchs WHERE id=?", (mid,)).fetchone(): continue
         dom, ext = d["receveur"]["id"], d["visiteur"]["id"]
         part = {}
         for j in d["joueurs"]:

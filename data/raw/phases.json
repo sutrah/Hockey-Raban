@@ -1,0 +1,51 @@
+[
+ {
+  "saison": 2025,
+  "competition_id": 159,
+  "phase_id": 435,
+  "libelle": "Saison régulière",
+  "type": "P"
+ },
+ {
+  "saison": 2025,
+  "competition_id": 159,
+  "phase_id": 495,
+  "libelle": "Série finale pour le titre",
+  "type": "T"
+ },
+ {
+  "saison": 2025,
+  "competition_id": 159,
+  "phase_id": 496,
+  "libelle": "Série finale pour le maintien",
+  "type": "C"
+ },
+ {
+  "saison": 2026,
+  "competition_id": 198,
+  "phase_id": 567,
+  "libelle": "Saison régulière",
+  "type": "P"
+ },
+ {
+  "saison": 2026,
+  "competition_id": 198,
+  "phase_id": 646,
+  "libelle": "Série finale pour le maintien",
+  "type": "C"
+ },
+ {
+  "saison": 2026,
+  "competition_id": 198,
+  "phase_id": 647,
+  "libelle": "Série finale pour le titre",
+  "type": "T"
+ },
+ {
+  "saison": 2027,
+  "competition_id": 242,
+  "phase_id": 728,
+  "libelle": "Saison régulière",
+  "type": "P"
+ }
+]

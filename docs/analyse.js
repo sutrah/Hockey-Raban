@@ -57,9 +57,10 @@ function evolution(T) {
 
 /* ---------- lignes probables, déduites des joueurs présents ensemble sur les buts à égalité numérique ---------- */
 const _L = {};
-function lignes(T) {
-  if (_L[T]) return _L[T];
-  const S = profil(T).S, ids = new Set(S.js.map(j => j.m.id)), grp = {};
+function lignes(T, der = 0) {   // der = 1 : seulement le dernier match
+  const cle = T + '|' + der;
+  if (_L[cle]) return _L[cle];
+  const S = profil(T).S, ids = new Set((der ? S.js.slice(-der) : S.js).map(j => j.m.id)), grp = {}, minTrio = der ? 3 : 5, minPaire = 2;
   S.joueurs.forEach(p => grp[p.id] = p.poste === 'GB' ? 'G' : p.poste === 'D' ? 'D' : 'A');
   const buts = D.buts.filter(b => ids.has(b.match_id) && b.situation === 'EG').map(b => ({ pour: b.equipe_id === T, j: (D.glace[b.id] || []).filter(x => x.equipe_id === T).map(x => x.joueur_id) }));
   const co = {}, k = (a, b) => a < b ? a + '|' + b : b + '|' + a, n = (a, b) => co[k(a, b)] || 0;
@@ -73,7 +74,7 @@ function lignes(T) {
       const x = libres[a], y = libres[b], z = libres[c], sc = n(x, y) + n(x, z) + n(y, z), mn = Math.min(n(x, y), n(x, z), n(y, z));
       if (mn >= 1 && (!best || sc > best.sc)) best = { j: [x, y, z], sc };
     }
-    if (!best || best.sc < 5) break;
+    if (!best || best.sc < minTrio) break;
     trios.push({ ...best, ...bilanL(best.j, 2) }); libres = libres.filter(x => !best.j.includes(x));
   }
   // défense : paires
@@ -81,17 +82,38 @@ function lignes(T) {
   while (dl.length >= 2) {
     let best = null;
     for (let a = 0; a < dl.length; a++) for (let b = a + 1; b < dl.length; b++) { const sc = n(dl[a], dl[b]); if (!best || sc > best.sc) best = { j: [dl[a], dl[b]], sc }; }
-    if (!best || best.sc < 2) break;
+    if (!best || best.sc < minPaire) break;
     paires.push({ ...best, ...bilanL(best.j, 2) }); dl = dl.filter(x => !best.j.includes(x));
   }
-  return _L[T] = { trios, paires, nb: buts.length, couv: S.couv, couvOk: S.couvOk };
+  return _L[cle] = { trios, paires, nb: buts.length, couv: S.couv, couvOk: S.couvOk };
+}
+const ligneDe = (T, id) => lignes(T, 1).trios.find(l => l.j.includes(id)) || lignes(T).trios.find(l => l.j.includes(id));
+const memeTrio = (a, b) => a.j.every(x => b.j.includes(x));
+// joueurs apparus en cours de saison (absents des trois premiers matchs au moins)
+function arrivees(T) {
+  const js = matchsDe(T); if (js.length < 4) return [];
+  const pres = js.map(j => new Set((D.compM[j.m.id] || []).filter(c => c.equipe_id === T).map(c => c.joueur_id))), S = profil(T).S;
+  return S.joueurs.filter(p => p.poste !== 'GB').map(p => ({ p, premier: pres.findIndex(s => s.has(p.id)) })).filter(x => x.premier >= 3)
+    .map(x => ({ ...x.p, depuis: js[x.premier].m, passe: Object.values(D.car[x.p.id] || {}).filter(c => c.s < CUR).sort((a, b) => b.s - a.s) }))
+    .sort((a, b) => (b.b + b.a) - (a.b + a.a));
+}
+function phraseArrivee(T, a) {
+  const l = lignes(T, 1).trios.find(x => x.j.includes(a.id)), mates = l ? l.j.filter(x => x !== a.id).map(nomJ) : [];
+  const passe = a.passe.length ? ` En D2 auparavant : ${a.passe.map(c => `${sais(c.s)} ${D.eq[c.eq] ? D.eq[c.eq].nom_court : '?'}, ${c.mj} matchs, ${c.b} buts et ${c.a} passes`).join(' ; ')}.` : ' Aucun match de D2 sur les deux saisons précédentes.';
+  return `${nomJ(a.id)}, aligné depuis le ${dateFr(a.depuis.date)} : ${a.mj} match(s), ${a.b} but(s), ${a.a} passe(s).${mates.length ? ` Au dernier match avec ${liste(mates)}.` : ''}${passe}`;
 }
 function carteLignes(T) {
   const L = lignes(T); if (!L.trios.length && !L.paires.length) return '';
   const rows = a => a.map((l, i) => [i + 1, l.j.map(x => esc(nomJ(x))).join(' – '), l.p, L.couvOk ? l.c : '–', L.couvOk ? `<b>${(l.p - l.c > 0 ? '+' : '') + (l.p - l.c)}</b>` : '–']);
   return `<div class="card"><h2>Lignes d'attaque probables</h2>${L.trios.length ? table(['', 'Trio', 'Buts pour', 'Buts contre', 'Diff.'], rows(L.trios), ['n', '', 'n', 'n', 'n']) : '<p class="muted">Pas assez de buts pour les déduire.</p>'}
     <h2 style="margin-top:16px">Paires de défense probables</h2>${L.paires.length ? table(['', 'Paire', 'Buts pour', 'Buts contre', 'Diff.'], rows(L.paires), ['n', '', 'n', 'n', 'n']) : '<p class="muted">Pas assez de buts pour les déduire.</p>'}
-    <p class="note">Déduites des joueurs présents ensemble sur les ${L.nb} buts à égalité numérique (marqués et encaissés). Buts comptés quand au moins deux joueurs de la ligne sont sur la glace. Une ligne modifiée récemment ou peu impliquée dans les buts peut échapper au calcul. ${L.couvOk ? `Buts contre : joueurs notés sur ${L.couv.ok} des ${L.couv.tot} buts encaissés.` : `Buts contre non affichés : les joueurs présents ne sont notés que sur ${L.couv.ok} des ${L.couv.tot} buts encaissés par cette équipe.`}</p></div>`;
+    <p class="note">Déduites des joueurs présents ensemble sur les ${L.nb} buts à égalité numérique (marqués et encaissés). Buts comptés quand au moins deux joueurs de la ligne sont sur la glace. Une ligne modifiée récemment ou peu impliquée dans les buts peut échapper au calcul. ${L.couvOk ? `Buts contre : joueurs notés sur ${L.couv.ok} des ${L.couv.tot} buts encaissés.` : `Buts contre non affichés : les joueurs présents ne sont notés que sur ${L.couv.ok} des ${L.couv.tot} buts encaissés par cette équipe.`}</p>${(() => {
+      const R = lignes(T, 1), dm = profil(T).S.js.slice(-1)[0];
+      if (!dm || !R.trios.length || R.trios.every(r => L.trios.some(l => memeTrio(r, l)))) return '';
+      return `<h2 style="margin-top:16px">Trios vus au dernier match (${dateFr(dm.m.date)}, ${esc(D.eq[dm.adv].nom_court)})</h2>
+        ${table(['', 'Trio', 'Buts pour', 'Buts contre', ''], R.trios.map((l, i) => [i + 1, l.j.map(x => esc(nomJ(x))).join(' – '), l.p, L.couvOk ? l.c : '–', L.trios.some(x => memeTrio(l, x)) ? '' : '<span class="tag">nouvelle composition</span>']), ['n', '', 'n', 'n', ''])}
+        <p class="note">Sur un seul match, seules les lignes impliquées dans un but apparaissent. Elles priment sur le tableau de la saison quand elles diffèrent.</p>`;
+    })()}</div>`;
 }
 
 /* ---------- notre équipe : tendances et axes de progression ---------- */
@@ -122,6 +144,7 @@ function tendances(T) {
   if (haut.length || bas.length) L.push(`Par rapport à ${sais(CUR - 1)} : ${haut.length ? 'en hausse ' + liste(haut.map(fe)) : ''}${haut.length && bas.length ? ' ; ' : ''}${bas.length ? 'en baisse ' + liste(bas.map(fe)) : ''}.`);
   const g = S.gardiens.filter(x => x.sec >= 1800);
   if (g[0]) L.push(`Gardiens : ${g.map(x => `${nomJ(x.id)} ${x.tit} titularisation(s), ${f1(x.enc * 3600 / (x.sec || 1))} but(s) encaissé(s) par match${x.tirs ? `, ${f1(100 * x.tirs / (x.tirs + x.encDet))} % d'arrêts sur ${x.tirs + x.encDet} tirs` : ''}`).join(' ; ')}.`);
+  arrivees(T).filter(a => a.b + a.a > 0 || a.passe.length).slice(0, 3).forEach(a => L.push('Arrivée en cours de saison : ' + phraseArrivee(T, a)));
   const ab = absences(T);
   if (ab.length) L.push(`Absents du dernier match parmi les joueurs habituels : ${liste(ab.map(a => `${nomJ(a.id)} (${a.manq} match(s) manqué(s) de suite)`))}.`);
   return L;
@@ -148,7 +171,7 @@ function axes(T) {
   if (S.pour.length >= 10 && impl / S.pour.length >= 0.55) A.push(['Élargir la production offensive', `${pct(impl, S.pour.length)} des buts passent par ${liste(top.map(p => nomJ(p.id)))} : l'équipe devient lisible si ce trio est neutralisé. Repère : davantage de buts des autres lignes.`]);
   const champ = S.joueurs.filter(p => p.poste !== 'GB' && p.mj >= Math.max(3, n / 2)), encEq = S.contre.filter(b => b.situation === 'EG').length, pire = [...champ].sort((a, b) => b.enc - a.enc)[0];
   const diffEq = S.pour.filter(b => b.situation === 'EG').length - encEq;
-  if (S.couvOk && pire && encEq >= 8 && pire.enc / encEq >= 0.35 && pire.pm <= 0 && diffEq > 0) A.push(['Repli défensif de la ligne de ' + nomJ(pire.id), `${(() => { const l = lignes(T).trios.find(x => x.j.includes(pire.id)); return l ? `Ligne probable : ${l.j.map(nomJ).join(' – ')} (${l.p} buts pour, ${l.c} contre). ` : ''; })()}Sur la glace pour ${pire.enc} des ${encEq} buts encaissés à égalité numérique, +/− de ${sg(pire.pm).replace(',0', '')} alors que l'équipe est à ${sg(diffEq).replace(',0', '')}. À recouper avec la vidéo : les joueurs présents ne sont notés que sur ${S.couv.ok} des ${S.couv.tot} buts encaissés.`]);
+  if (S.couvOk && pire && encEq >= 8 && pire.enc / encEq >= 0.35 && pire.pm <= 0 && diffEq > 0) A.push(['Repli défensif de la ligne de ' + nomJ(pire.id), `${(() => { const l = ligneDe(T, pire.id); return l ? `Ligne probable : ${l.j.map(nomJ).join(' – ')} (${l.p} buts pour, ${l.c} contre). ` : ''; })()}Sur la glace pour ${pire.enc} des ${encEq} buts encaissés à égalité numérique, +/− de ${sg(pire.pm).replace(',0', '')} alors que l'équipe est à ${sg(diffEq).replace(',0', '')}. À recouper avec la vidéo : les joueurs présents ne sont notés que sur ${S.couv.ok} des ${S.couv.tot} buts encaissés.`]);
   if (S.detail.length) {
     const faibles = S.detail.filter(d => d.et >= 20 && d.eg / d.et < 0.45), e = S.enga.filter(x => x.n >= 15).sort((a, b) => b.g / b.n - a.g / a.n);
     if (faibles.length && e.length >= 2) A.push(['Engagements', `${faibles.length} match(s) sur ${S.detail.length} sous 45 % (${faibles.map(d => `${pct(d.eg, d.et)} contre ${D.eq[d.j.adv].nom_court}`).join(', ')}). ${nomJ(e[0].id)} gagne ${pct(e[0].g, e[0].n)} de ses mises en jeu, ${nomJ(e[e.length - 1].id)} ${pct(e[e.length - 1].g, e[e.length - 1].n)} : répartir les engagements clés en conséquence.`]);
@@ -194,7 +217,7 @@ function preconisations(O) {
   const top = S.joueurs.slice(0, 3).filter(p => p.b + p.a > 0), ids = new Set(top.map(p => p.id)), impl = S.pour.filter(b => [b.buteur_id, b.assist1_id, b.assist2_id].some(x => ids.has(x))).length;
   if (top.length) {
     const defs = P.S.joueurs.filter(p => p.poste === 'D' && p.mj >= P.n / 2).sort((a, b) => b.pm - a.pm).slice(0, 2), duo = S.duos[0];
-    const ligne = lignes(O).trios.find(l => l.j.includes(top[0].id)), paire = [...lignes(B).paires].sort((a, b) => (b.p - b.c) - (a.p - a.c))[0];
+    const ligne = ligneDe(O, top[0].id), paire = [...lignes(B).paires].sort((a, b) => (b.p - b.c) - (a.p - a.c))[0];
     R.push(['Joueurs à neutraliser', `${liste(top.map(p => `${nomJ(p.id)} (${p.b} buts, ${p.a} passes)`))} sont impliqués dans ${impl} des ${S.pour.length} buts (${pct(impl, S.pour.length)}).${ligne ? ` Ligne probable : ${ligne.j.map(nomJ).join(' – ')} (${ligne.p} buts marqués à égalité numérique${lignes(O).couvOk ? `, ${ligne.c} encaissés` : ''}).` : duo ? ` Duo principal : ${nomJ(duo.a)} + ${nomJ(duo.b)} (${duo.n} buts ensemble).` : ''}${paire ? ` Meilleure paire de défense de ${nB} : ${paire.j.map(nomJ).join(' – ')} (${paire.p} buts pour, ${paire.c} contre)` : ''}${paire ? (chezNous === true ? ' ; à domicile, le dernier changement permet de l\'opposer à cette ligne.' : chezNous === false ? ' ; à l\'extérieur, sans le dernier changement, privilégier des présences courtes quand cette ligne est sur la glace.' : '.') : defs.length ? ` Défenseurs de ${nB} les plus solides à égalité numérique : ${liste(defs.map(p => `${nomJ(p.id)} (${sg(p.pm).replace(',0', '')})`))}${chezNous === true ? ' ; à domicile, le dernier changement permet de les opposer à cette ligne.' : chezNous === false ? ' ; à l\'extérieur, sans le dernier changement, privilégier des présences courtes quand cette ligne est sur la glace.' : '.'}` : ''}`]);
   }
   // gardien
@@ -209,6 +232,8 @@ function preconisations(O) {
   // banc
   const ch = chezNous === true ? Q.champExt : chezNous === false ? Q.champDom : null;
   if (ch != null && ch <= 15.5) R.push(['Profiter d\'un banc court', `${nO} aligne en moyenne ${f1(ch)} joueurs de champ ${chezNous ? 'en déplacement' : 'à domicile'} : jeu en vitesse et échec-avant soutenu pour les user avant le 3e tiers.`]);
+  const arr = arrivees(O).filter(a => a.b + a.a > 0 || a.passe.length).slice(0, 3);
+  if (arr.length) R.push(['Arrivées en cours de saison', arr.map(a => phraseArrivee(O, a)).join(' ')]);
   const ab = absences(O);
   if (ab.length) R.push(['Absents à leur dernier match', `${liste(ab.map(a => `${nomJ(a.id)} (${a.manq} match(s) manqué(s), ${(() => { const p = S.joueurs.find(x => x.id === a.id); return p ? `${p.b + p.a} pts en ${p.mj} matchs` : ''; })()})`))}. Cause non publiée (blessure, suspension ou choix) : à vérifier avant le match.`]);
   if (P.S.enga.length) { const e = P.S.enga.filter(x => x.n >= 15).sort((a, b) => b.g / b.n - a.g / a.n)[0]; if (e) R.push(['Engagements clés', `Mises en jeu défensives et fins de période : ${nomJ(e.id)} est le plus fiable de ${nB} (${pct(e.g, e.n)} sur ${e.n}).`]); }

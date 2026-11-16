@@ -235,7 +235,8 @@ function pageEquipe(ab) {
   h += `<div class="tiles">${tile(pts, 'points', bilan(S.js))}${tile(`${bp} / ${bc}`, 'buts marqués / encaissés', n ? `${(bp / n).toFixed(1)} / ${(bc / n).toFixed(1)} par match` : '')}
     ${tile(pct(S.ppB, S.occ.sup), 'supériorité', `${S.ppB} buts / ≈${S.occ.sup} occasions`)}${tile(pct(S.occ.inf - S.pkB, S.occ.inf), 'infériorité', `${S.pkB} buts encaissés / ≈${S.occ.inf}`)}
     ${tile(n ? (S.pens.reduce((s, p) => s + (p.minutes || 0), 0) / n).toFixed(1) : '–', 'min de pénalité / match', `${S.pens.length} pénalités`)}</div>`;
-  h += `<div class="card"><h2>À retenir</h2><ul class="keys">${aRetenir(S).map(l => `<li>${esc(l)}</li>`).join('')}</ul></div>`;
+  if (T === me) h += carteAnalyse(T);
+  else if (n) h += cartePreco(T) + `<div class="card"><h2>À retenir sur ${esc(e.nom_court)}</h2><ul class="keys">${aRetenir(S).map(l => `<li>${esc(l)}</li>`).join('')}</ul></div>`;
 
   if (T !== me) {
     const vs = D.matchs.filter(m => (m.dom_id === T && m.ext_id === me) || (m.dom_id === me && m.ext_id === T));
@@ -246,6 +247,7 @@ function pageEquipe(ab) {
     }))}</div>`;
   }
 
+  if (T !== me) h += carteAnalyse(T);
   h += `<div class="card"><h2>Quand ils marquent et quand ils encaissent</h2>${chartTranches(S)}</div>`;
 
   const scRow = (l, a) => [l, a.length, a.filter(j => j.v).length, a.length - a.filter(j => j.v).length];
@@ -312,8 +314,7 @@ function pageAccueil() {
     const A = stats(adv);
     h += `<div class="card"><h2>Prochain match</h2><div class="next"><b>${p.dom_id === me ? 'Domicile' : 'Extérieur'} · ${esc(D.eq[adv].nom)}</b>
       <span>${dateFr(p.date)} à ${heure(p.date)} · ${esc(p.patinoire || '')} · J${p.journee}</span>
-      <a href="#/equipe/${D.eq[adv].abreviation}">Ouvrir la fiche adversaire →</a></div>
-      <ul class="keys" style="margin-top:10px">${aRetenir(A).slice(0, 5).map(l => `<li>${esc(l)}</li>`).join('')}</ul></div>`;
+      <a href="#/equipe/${D.eq[adv].abreviation}">Ouvrir la fiche adversaire →</a></div></div>${cartePreco(adv, 6)}`;
   }
   h += `<div class="card"><h2>Classement de la poule</h2>${tableClassement(me, [me, adv])}</div>`;
   h += `<div class="grid2"><div class="card"><h2>Derniers résultats</h2>${table(['J', 'Date', '', 'Adversaire', 'Résultat'], S.js.slice(-6).reverse().map(j => [`J${j.m.journee}`, dateFr(j.m.date), j.dom ? 'Dom.' : 'Ext.', lienEq(j.adv), score(j)]))}

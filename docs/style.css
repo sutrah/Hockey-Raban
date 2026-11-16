@@ -53,6 +53,10 @@ tr.me td { font-weight: 650; }
 .D { color: var(--bad); font-weight: 650; }
 ul.keys { margin: 0; padding-left: 18px; }
 ul.keys li { margin: 4px 0; }
+.tag { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.tag.fort { color: var(--good); } .tag.faible { color: var(--bad); }
+dl.reco { margin: 0; } dl.reco dt { font-weight: 650; margin-top: 10px; } dl.reco dt:first-child { margin-top: 0; }
+dl.reco dd { margin: 2px 0 0; color: var(--ink2); }
 .note { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
 .next { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; }
 .next b { font-size: 20px; }

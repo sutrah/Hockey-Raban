@@ -8,11 +8,12 @@ const nomJ = id => D.j[id] || '?';
 const liste = a => a.length > 1 ? a.slice(0, -1).join(', ') + ' et ' + a[a.length - 1] : a.join('');
 
 function profil(T) {
-  if (_P[T]) return _P[T];
+  const cle = T + '|' + FILTRE + '|' + AVANT;
+  if (_P[cle]) return _P[cle];
   const S = stats(T), n = S.js.length || 1, dom = S.js.filter(j => j.dom), ext = S.js.filter(j => !j.dom);
   const ptsm = a => a.length ? a.reduce((s, j) => s + j.pts, 0) / a.length : null, d = i => (S.tiers[i].p - S.tiers[i].c) / n;
   const champ = a => a.length ? a.reduce((s, j) => s + (D.compM[j.m.id] || []).filter(c => c.equipe_id === T && c.poste !== 'GB').length, 0) / a.length : null;
-  return _P[T] = { T, S, n: S.js.length, dom, ext, bpm: S.pour.length / n, bcm: S.contre.length / n,
+  return _P[cle] = { T, S, n: S.js.length, dom, ext, bpm: S.pour.length / n, bcm: S.contre.length / n,
     pp: S.occ.sup ? S.ppB / S.occ.sup : null, pk: S.occ.inf ? 1 - S.pkB / S.occ.inf : null, penm: S.occ.inf / n, provm: S.occ.sup / n,
     t1: d(0), t2: d(1), t3: d(2), ptsDom: ptsm(dom), ptsExt: ptsm(ext), premier: S.sc.premier.length / n, champDom: champ(dom), champExt: champ(ext) };
 }
@@ -20,7 +21,7 @@ function profil(T) {
 const IND = [
   ['Buts marqués par match', 'bpm', 1, f1], ['Buts encaissés par match', 'bcm', -1, f1],
   ['Supériorité (réussite)', 'pp', 1, pc], ['Infériorité (réussite)', 'pk', 1, pc],
-  ['Pénalités mineures prises par match', 'penm', -1, f1], ['Pénalités provoquées par match', 'provm', 1, f1],
+  ['Infériorités subies par match', 'penm', -1, f1], ['Supériorités obtenues par match', 'provm', 1, f1],
   ['Différence de buts au 1er tiers, par match', 't1', 1, sg], ['Différence de buts au 2e tiers, par match', 't2', 1, sg], ['Différence de buts au 3e tiers, par match', 't3', 1, sg],
   ['Points par match à domicile', 'ptsDom', 1, f1], ['Points par match à l\'extérieur', 'ptsExt', 1, f1], ['Matchs où l\'équipe ouvre le score', 'premier', 1, pc]];
 
@@ -37,7 +38,7 @@ function comparer(T) {
 
 // joueurs habituellement alignés et absents des derniers matchs (la cause n'est pas publiée)
 function absences(T) {
-  const js = matchsDe(T); if (js.length < 4) return [];
+  const js = sansFiltre(() => matchsDe(T)); if (js.length < 4) return [];
   const pres = js.map(j => new Set((D.compM[j.m.id] || []).filter(c => c.equipe_id === T).map(c => c.joueur_id))), out = [];
   for (const id of new Set(pres.flatMap(s => [...s]))) {
     const nb = pres.filter(s => s.has(id)).length; let manq = 0;
@@ -58,7 +59,7 @@ function evolution(T) {
 /* ---------- lignes probables, déduites des joueurs présents ensemble sur les buts à égalité numérique ---------- */
 const _L = {};
 function lignes(T, der = 0) {   // der = 1 : seulement le dernier match
-  const cle = T + '|' + der;
+  const cle = T + '|' + der + '|' + FILTRE + '|' + AVANT;
   if (_L[cle]) return _L[cle];
   const S = profil(T).S, ids = new Set((der ? S.js.slice(-der) : S.js).map(j => j.m.id)), grp = {}, minTrio = der ? 3 : 5, minPaire = 2;
   S.joueurs.forEach(p => grp[p.id] = p.poste === 'GB' ? 'G' : p.poste === 'D' ? 'D' : 'A');
@@ -91,7 +92,7 @@ const ligneDe = (T, id) => lignes(T, 1).trios.find(l => l.j.includes(id)) || lig
 const memeTrio = (a, b) => a.j.every(x => b.j.includes(x));
 // joueurs apparus en cours de saison (absents des trois premiers matchs au moins)
 function arrivees(T) {
-  const js = matchsDe(T); if (js.length < 4) return [];
+  const js = sansFiltre(() => matchsDe(T)); if (js.length < 4) return [];
   const pres = js.map(j => new Set((D.compM[j.m.id] || []).filter(c => c.equipe_id === T).map(c => c.joueur_id))), S = profil(T).S;
   return S.joueurs.filter(p => p.poste !== 'GB').map(p => ({ p, premier: pres.findIndex(s => s.has(p.id)) })).filter(x => x.premier >= 3)
     .map(x => ({ ...x.p, depuis: js[x.premier].m, passe: Object.values(D.car[x.p.id] || {}).filter(c => c.s < CUR).sort((a, b) => b.s - a.s) }))
@@ -102,20 +103,6 @@ function phraseArrivee(T, a) {
   const passe = a.passe.length ? ` En D2 auparavant : ${a.passe.map(c => `${sais(c.s)} ${D.eq[c.eq] ? D.eq[c.eq].nom_court : '?'}, ${c.mj} matchs, ${c.b} buts et ${c.a} passes`).join(' ; ')}.` : ' Aucun match de D2 sur les deux saisons précédentes.';
   return `${nomJ(a.id)}, aligné depuis le ${dateFr(a.depuis.date)} : ${a.mj} match(s), ${a.b} but(s), ${a.a} passe(s).${mates.length ? ` Au dernier match avec ${liste(mates)}.` : ''}${passe}`;
 }
-function carteLignes(T) {
-  const L = lignes(T); if (!L.trios.length && !L.paires.length) return '';
-  const rows = a => a.map((l, i) => [i + 1, l.j.map(x => esc(nomJ(x))).join(' – '), l.p, L.couvOk ? l.c : '–', L.couvOk ? `<b>${(l.p - l.c > 0 ? '+' : '') + (l.p - l.c)}</b>` : '–']);
-  return `<div class="card"><h2>Lignes d'attaque probables</h2>${L.trios.length ? table(['', 'Trio', 'Buts pour', 'Buts contre', 'Diff.'], rows(L.trios), ['n', '', 'n', 'n', 'n']) : '<p class="muted">Pas assez de buts pour les déduire.</p>'}
-    <h2 style="margin-top:16px">Paires de défense probables</h2>${L.paires.length ? table(['', 'Paire', 'Buts pour', 'Buts contre', 'Diff.'], rows(L.paires), ['n', '', 'n', 'n', 'n']) : '<p class="muted">Pas assez de buts pour les déduire.</p>'}
-    <p class="note">Déduites des joueurs présents ensemble sur les ${L.nb} buts à égalité numérique (marqués et encaissés). Buts comptés quand au moins deux joueurs de la ligne sont sur la glace. Une ligne modifiée récemment ou peu impliquée dans les buts peut échapper au calcul. ${L.couvOk ? `Buts contre : joueurs notés sur ${L.couv.ok} des ${L.couv.tot} buts encaissés.` : `Buts contre non affichés : les joueurs présents ne sont notés que sur ${L.couv.ok} des ${L.couv.tot} buts encaissés par cette équipe.`}</p>${(() => {
-      const R = lignes(T, 1), dm = profil(T).S.js.slice(-1)[0];
-      if (!dm || !R.trios.length || R.trios.every(r => L.trios.some(l => memeTrio(r, l)))) return '';
-      return `<h2 style="margin-top:16px">Trios vus au dernier match (${dateFr(dm.m.date)}, ${esc(D.eq[dm.adv].nom_court)})</h2>
-        ${table(['', 'Trio', 'Buts pour', 'Buts contre', ''], R.trios.map((l, i) => [i + 1, l.j.map(x => esc(nomJ(x))).join(' – '), l.p, L.couvOk ? l.c : '–', L.trios.some(x => memeTrio(l, x)) ? '' : '<span class="tag">nouvelle composition</span>']), ['n', '', 'n', 'n', ''])}
-        <p class="note">Sur un seul match, seules les lignes impliquées dans un but apparaissent. Elles priment sur le tableau de la saison quand elles diffèrent.</p>`;
-    })()}</div>`;
-}
-
 /* ---------- notre équipe : tendances et axes de progression ---------- */
 function tendances(T) {
   const P = profil(T), S = P.S, n = P.n, L = [];
@@ -159,11 +146,11 @@ function axes(T) {
     A.push(['Jouer à l\'extérieur comme à domicile', `${f1(P.ptsExt)} point par match en déplacement contre ${f1(P.ptsDom)} à domicile ; ${b(P.ext)} buts marqués par match à l'extérieur contre ${b(P.dom)} à domicile. Repère : au moins 1,5 point par déplacement.`]);
   }
   if (P.t3 < P.t1 - 0.4 || (C.t3 && C.t3.niveau === 'faible')) A.push(['Finir les matchs', `3e tiers : ${S.tiers[2].p} buts marqués, ${S.tiers[2].c} encaissés, contre ${S.tiers[0].p}-${S.tiers[0].c} au 1er tiers (${rg(C.t3)}). Pistes à vérifier à la vidéo : longueur des présences en fin de match, rotation des lignes, gestion de l'avance. Repère : une différence de buts positive au 3e tiers.`]);
-  if (C.pp && C.pp.v < C.pp.moy) A.push(['Supériorité numérique', `${pc(P.pp)} de réussite (${S.ppB} buts sur environ ${S.occ.sup} occasions), ${rg(C.pp)}. Repère : repasser au-dessus de la moyenne.`]);
-  if (C.pk && C.pk.v < C.pk.moy) A.push(['Infériorité numérique', `${pc(P.pk)} de réussite (${S.pkB} buts encaissés sur environ ${S.occ.inf} pénalités), ${rg(C.pk)}.`]);
+  if (C.pp && C.pp.v < C.pp.moy) A.push(['Supériorité numérique', `${pc(P.pp)} de réussite (${S.ppB} buts en ${S.occ.sup} supériorités), ${rg(C.pp)}. Repère : repasser au-dessus de la moyenne.`]);
+  if (C.pk && C.pk.v < C.pk.moy) A.push(['Infériorité numérique', `${pc(P.pk)} de réussite (${S.pkB} buts encaissés en ${S.occ.inf} infériorités), ${rg(C.pk)}.`]);
   if (C.penm && C.penm.v > C.penm.moy) {
     const pims = [...S.joueurs].sort((a, b) => b.pim - a.pim).slice(0, 3).filter(p => p.pim > 0);
-    A.push(['Discipline', `${f1(P.penm)} pénalités mineures par match (${rg(C.penm)}). ${liste(pims.map(p => `${nomJ(p.id)} ${p.pim} min`))}. Repère : passer sous la moyenne.`]);
+    A.push(['Discipline', `${f1(P.penm)} infériorités par match (${rg(C.penm)}). ${liste(pims.map(p => `${nomJ(p.id)} ${p.pim} min`))}. Repère : passer sous la moyenne.`]);
   }
   if (S.sc.mene.length >= 2 && !S.sc.mene.some(j => j.v)) A.push(['Revenir au score', `Menée après deux tiers : ${S.sc.mene.length} matchs, aucune victoire. Quand l'adversaire ouvre le score : ${bilan(S.sc.second)}.`]);
   if (S.repC >= 3) A.push(['La présence qui suit un but marqué', `${S.repC} buts encaissés dans les 2 minutes après avoir marqué (et ${S.repP} marqués dans les 2 minutes après en avoir encaissé un).`]);
@@ -182,11 +169,11 @@ function axes(T) {
 }
 
 /* ---------- préconisations face à un adversaire ---------- */
-function preconisations(O) {
+function preconisations(O, M) {
   const B = D.ab[ME].id, P = profil(B), Q = profil(O), S = Q.S, R = [];
   if (!Q.n || !P.n) return R;
   const nB = D.eq[B].nom_court, nO = D.eq[O].nom_court, C = Object.fromEntries(comparer(O).map(c => [c.k, c])), CB = Object.fromEntries(comparer(B).map(c => [c.k, c]));
-  const proch = D.matchs.find(m => m.etat !== 'T' && ((m.dom_id === B && m.ext_id === O) || (m.dom_id === O && m.ext_id === B))), chezNous = proch ? proch.dom_id === B : null;
+  const proch = M || D.matchs.find(m => m.etat !== 'T' && ((m.dom_id === B && m.ext_id === O) || (m.dom_id === O && m.ext_id === B))), chezNous = proch ? proch.dom_id === B : null;
   // lieu
   if (proch) {
     const a = chezNous ? Q.ext : Q.dom, b = chezNous ? P.dom : P.ext;
@@ -204,13 +191,13 @@ function preconisations(O) {
   // discipline
   if (Q.pp != null) {
     const pp = S.joueurs.filter(p => p.pp > 0).sort((a, b) => b.pp - a.pp).slice(0, 3), qui = pp.length ? ` Points en supériorité : ${liste(pp.map(p => `${nomJ(p.id)} (${p.pp})`))}.` : '';
-    if (C.pp.v >= C.pp.moy) R.push(['Rester hors du banc des pénalités', `Leur supériorité tourne à ${pc(Q.pp)} (${S.ppB} buts, ${C.pp.rang}e sur ${C.pp.sur} en D2). ${nB} prend ${f1(P.penm)} pénalités mineures par match.${qui}`]);
-    else R.push(['Leur supériorité est peu dangereuse', `${pc(Q.pp)} de réussite (${S.ppB} buts sur environ ${S.occ.sup} occasions, ${C.pp.rang}e sur ${C.pp.sur}).${qui}`]);
+    if (C.pp.v >= C.pp.moy) R.push(['Rester hors du banc des pénalités', `Leur supériorité tourne à ${pc(Q.pp)} (${S.ppB} buts, ${C.pp.rang}e sur ${C.pp.sur} en D2). ${nB} joue ${f1(P.penm)} infériorités par match.${qui}`]);
+    else R.push(['Leur supériorité est peu dangereuse', `${pc(Q.pp)} de réussite (${S.ppB} buts en ${S.occ.sup} supériorités, ${C.pp.rang}e sur ${C.pp.sur}).${qui}`]);
   }
   if (Q.pk != null) {
     const pims = [...S.joueurs].sort((a, b) => b.pen - a.pen).slice(0, 3).filter(p => p.pen >= 2), ppB = P.S.joueurs.filter(p => p.pp > 0).sort((a, b) => b.pp - a.pp).slice(0, 3);
-    if (C.pk.v < C.pk.moy || C.penm.v > C.penm.moy) R.push(['Provoquer des fautes', `${nO} prend ${f1(Q.penm)} pénalités mineures par match (moyenne D2 ${f1(C.penm.moy)}) et en tue ${pc(Q.pk)} (${C.pk.rang}e sur ${C.pk.sur}).${pims.length ? ` Les plus pénalisés : ${liste(pims.map(p => `${nomJ(p.id)} (${p.pen} pénalités, ${p.pim} min)`))}.` : ''}${ppB.length ? ` En supériorité, ${nB} s'appuie sur ${liste(ppB.map(p => nomJ(p.id)))}.` : ''}`]);
-    else R.push(['Ne pas compter sur la supériorité', `${nO} est discipliné (${f1(Q.penm)} pénalités mineures par match) et tue ${pc(Q.pk)} des pénalités (${C.pk.rang}e sur ${C.pk.sur}) : la différence devra se faire à égalité numérique.`]);
+    if (C.pk.v < C.pk.moy || C.penm.v > C.penm.moy) R.push(['Provoquer des fautes', `${nO} joue ${f1(Q.penm)} infériorités par match (moyenne D2 ${f1(C.penm.moy)}) et en tue ${pc(Q.pk)} (${C.pk.rang}e sur ${C.pk.sur}).${pims.length ? ` Les plus pénalisés : ${liste(pims.map(p => `${nomJ(p.id)} (${p.pen} pénalités, ${p.pim} min)`))}.` : ''}${ppB.length ? ` En supériorité, ${nB} s'appuie sur ${liste(ppB.map(p => nomJ(p.id)))}.` : ''}`]);
+    else R.push(['Ne pas compter sur la supériorité', `${nO} est discipliné (${f1(Q.penm)} infériorités par match) et tue ${pc(Q.pk)} des pénalités (${C.pk.rang}e sur ${C.pk.sur}) : la différence devra se faire à égalité numérique.`]);
   }
   if (S.shP >= 2) R.push(['Prudence en supériorité', `${nO} a marqué ${S.shP} buts en infériorité : sécuriser la ligne bleue et le dernier défenseur.`]);
   // joueurs à surveiller
@@ -240,22 +227,4 @@ function preconisations(O) {
   const H = historique(O).cont;
   if (H.now && H.buts) R.push(['Ce que vaut l\'historique', `${H.restes} des ${H.now} joueurs étaient déjà au club en ${sais(H.prec)} et pesaient ${pct(H.butsRestes, H.buts)} des buts : ${H.butsRestes / H.buts < 0.4 ? 'l\'équipe a beaucoup changé, se fier d\'abord aux matchs de cette saison.' : 'les tendances de la saison passée restent parlantes.'}`]);
   return R;
-}
-
-/* ---------- rendu ---------- */
-const blocs = a => `<dl class="reco">${a.map(([t, x]) => `<dt>${esc(t)}</dt><dd>${esc(x)}</dd>`).join('')}</dl>`;
-function carteAnalyse(T) {
-  const c = comparer(T), t = tendances(T), a = axes(T), nous = T === D.ab[ME].id;
-  if (!profil(T).n) return '';
-  return `<div class="card"><h2>${nous ? 'Analyse : tendances de notre équipe' : 'Profil par rapport au reste de la D2'}</h2>
-    ${table(['Indicateur', D.eq[T].nom_court, 'Moyenne D2', 'Rang', ''], c.map(x => [x.lab, `<b>${x.fmt(x.v)}</b>`, x.fmt(x.moy), `${x.rang}/${x.sur}`, x.niveau === 'fort' ? '<span class="tag fort">▲ point fort</span>' : x.niveau === 'faible' ? '<span class="tag faible">▼ point faible</span>' : '']), ['', 'n', 'n', 'n', ''])}
-    ${nous ? `<ul class="keys" style="margin-top:12px">${t.map(l => `<li>${esc(l)}</li>`).join('')}</ul>` : ''}
-    <p class="note">Rang parmi les ${c[0] ? c[0].sur : 20} équipes de D2 cette saison (les deux poules). Petit échantillon : ${profil(T).n} matchs.</p></div>
-    ${nous ? `<div class="card"><h2>Axes de progression</h2>${a.length ? blocs(a) : '<p class="muted">Aucun point faible net dans les chiffres pour l\'instant.</p>'}
-    <p class="note">Déduits des chiffres ci-dessus. Ils indiquent où regarder, pas la cause : à confirmer à la vidéo et à l'entraînement.</p></div>` : ''}`;
-}
-function cartePreco(O, max) {
-  const r = preconisations(O); if (!r.length) return '';
-  return `<div class="card"><h2>Tendances et préconisations face à ${esc(D.eq[O].nom_court)}</h2>${blocs(max ? r.slice(0, max) : r)}
-    ${max ? '' : '<p class="note">Générées à partir des feuilles de match des deux équipes. Elles ne remplacent pas la vidéo : système de jeu, sorties de zone et placement ne figurent pas dans ces données.</p>'}</div>`;
 }

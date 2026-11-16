@@ -11,9 +11,12 @@
   <a class="brand" href="#/">Hockey Raban <span>D2 2026-27</span></a>
   <nav>
     <a href="#/" data-nav="home">Accueil</a>
-    <a href="#/equipe/BRE" data-nav="me">Brest</a>
-    <a href="#/" id="nav-adv" data-nav="adv">Prochain adversaire</a>
-    <select id="team-select" aria-label="Choisir une équipe"></select>
+    <a href="#/fiche" data-nav="fiche">Fiche de match</a>
+    <a href="#/debrief" data-nav="debrief">Débrief</a>
+    <a href="#/equipe/BRE" data-nav="equipe">Brest</a>
+    <a href="#/lignes" data-nav="lignes">Lignes</a>
+    <a href="#/video" data-nav="video">Analyses vidéo IA</a>
+    <select id="team-select" aria-label="Voir une équipe"></select>
     <button id="print" type="button">Imprimer</button>
   </nav>
 </header>
@@ -23,7 +26,9 @@
 </footer>
 <div id="tip" role="tooltip" hidden></div>
 <script src="vendor/sql-wasm.js"></script>
-<script src="analyse.js"></script>
 <script src="app.js"></script>
+<script src="analyse.js"></script>
+<script src="visuels.js"></script>
+<script src="pages.js"></script>
 </body>
 </html>

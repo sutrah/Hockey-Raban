@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hockey Raban – D2</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#/">Hockey Raban <span>D2 2026-27</span></a>
+  <nav>
+    <a href="#/" data-nav="home">Accueil</a>
+    <a href="#/equipe/BRE" data-nav="me">Brest</a>
+    <a href="#/" id="nav-adv" data-nav="adv">Prochain adversaire</a>
+    <select id="team-select" aria-label="Choisir une équipe"></select>
+    <button id="print" type="button">Imprimer</button>
+  </nav>
+</header>
+<main id="app"><p class="muted">Chargement des données…</p></main>
+<footer class="foot">
+  <span id="maj"></span> · Source : feuilles de match FFHG (hockeyfrance.com)
+</footer>
+<div id="tip" role="tooltip" hidden></div>
+<script src="vendor/sql-wasm.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

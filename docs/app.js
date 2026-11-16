@@ -102,6 +102,10 @@ function stats(T, s = CUR) {
     if (D.m[b.match_id].detail_tirs) { pl(b.buteur_id).tirs++; pl(b.buteur_id).bDet++; }
   }
   for (const b of buts) if (b.situation === 'EG') for (const s of D.glace[b.id] || []) if (s.equipe_id === T) { pl(s.joueur_id).pm += s.signe; if (s.signe < 0) pl(s.joueur_id).enc++; }
+  // les feuilles notent rarement les joueurs présents sur un but encaissé : on mesure la couverture
+  const encEg = contre.filter(b => b.situation === 'EG');
+  S.couv = { ok: encEg.filter(b => (D.glace[b.id] || []).filter(s => s.equipe_id === T).length >= 3).length, tot: encEg.length };
+  S.couvOk = S.couv.tot > 0 && S.couv.ok / S.couv.tot >= 0.5;
   const pens = D.penalites.filter(p => ids.has(p.match_id) && p.equipe_id === T);
   pens.forEach(p => { if (p.joueur_id) { pl(p.joueur_id).pim += p.minutes || 0; pl(p.joueur_id).pen++; } });
   D.tirs.filter(t => ids.has(t.match_id) && t.equipe_id === T).forEach(t => t.tireur_id && pl(t.tireur_id).tirs++);
@@ -248,6 +252,7 @@ function pageEquipe(ab) {
   }
 
   if (T !== me) h += carteAnalyse(T);
+  h += carteLignes(T);
   h += `<div class="card"><h2>Quand ils marquent et quand ils encaissent</h2>${chartTranches(S)}</div>`;
 
   const scRow = (l, a) => [l, a.length, a.filter(j => j.v).length, a.length - a.filter(j => j.v).length];
@@ -268,9 +273,9 @@ function pageEquipe(ab) {
 
   const det = S.detail.length > 0;
   h += `<div class="card"><h2>Joueurs</h2>${table(['N°', 'Joueur', 'Poste', 'MJ', 'B', 'A', 'Pts', 'Pts sup.', '+/−', 'Sur glace but enc.', 'Pén. min'].concat(det ? ['Tirs*'] : [], ['Saisons précédentes en D2 (B+A)']),
-    S.joueurs.filter(p => p.poste !== 'GB').map(p => [esc(p.num), esc(D.j[p.id]), p.poste || '', p.mj, p.b, p.a, `<b>${p.b + p.a}</b>`, p.pp, (p.pm > 0 ? '+' : '') + p.pm, p.enc, p.pim].concat(det ? [p.tirs] : [], [passe(p.id)])),
+    S.joueurs.filter(p => p.poste !== 'GB').map(p => [esc(p.num), esc(D.j[p.id]), p.poste || '', p.mj, p.b, p.a, `<b>${p.b + p.a}</b>`, p.pp, S.couvOk ? (p.pm > 0 ? '+' : '') + p.pm : '–', S.couvOk ? p.enc : '–', p.pim].concat(det ? [p.tirs] : [], [passe(p.id)])),
     ['n', '', '', 'n', 'n', 'n', 'n', 'n', 'n', 'n', 'n', det ? 'n' : '', ''])}
-    <p class="note">+/− et présence sur les buts encaissés : à égalité numérique uniquement ; les feuilles de match ne listent pas toujours tous les joueurs.${det ? ` *Tirs cadrés, sur les ${S.detail.length} matchs où ils sont saisis.` : ''}</p></div>`;
+    <p class="note">+/− et présence sur les buts encaissés : à égalité numérique uniquement. Les joueurs présents ne sont notés que sur ${S.couv.ok} des ${S.couv.tot} buts encaissés par cette équipe${S.couvOk ? ' : à lire comme une tendance.' : ' : trop peu pour afficher un +/− fiable.'}${det ? ` *Tirs cadrés, sur les ${S.detail.length} matchs où ils sont saisis.` : ''}</p></div>`;
 
   const types = Object.entries(by(S.pens, p => p.libelle || '?')).map(([l, a]) => [l, a.length]).sort((a, b) => b[1] - a[1]).slice(0, 6);
   const perPen = [1, 2, 3].map(p => S.pens.filter(x => x.periode === p).length);

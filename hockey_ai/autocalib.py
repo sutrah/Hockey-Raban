@@ -409,6 +409,7 @@ class AutoCameraTracker:
         self.job = None
         self.job_result = None
         self.acc = None
+        self.last_try = None
 
     # -------------------------------------------------------------- outils
     def _p(self, q):
@@ -501,6 +502,7 @@ class AutoCameraTracker:
                 self.since = 0
                 sc, _ = self._scorer(frame, boxes)
                 q, cost = self._refine(sc, self.q, 90 if big_gap else 40)
+                self.last_try = (q, cost, "recalage")
                 if big_gap and cost > self.accept:      # second essai en partant plus large
                     q2, c2 = _nm(lambda qq: sc(self._p(qq)), self.q, np.array([3.0, 1.5, 6.0]), 90)
                     if c2 < cost:
@@ -528,6 +530,7 @@ class AutoCameraTracker:
                 self.acc = self.acc @ M if M is not None else None
             if self.background and self.job_result is not None:
                 q, cost = self.job_result
+                self.last_try = (q, cost, "recherche")
                 if getattr(self, "debug", False):
                     self.log(f"[cam] résultat recherche {cost:.2f} (acc {'ok' if self.acc is not None else 'perdu'})")
                 self.job_result = None

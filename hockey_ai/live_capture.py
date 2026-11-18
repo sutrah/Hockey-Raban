@@ -71,7 +71,8 @@ class ScreenSource:
         log(f"[capture] écran via {self.grab.backend}")
 
     def reset(self):
-        """Recrée la capture (après un passage en plein écran, Windows peut la bloquer)."""
+        """Recrée la capture (après un passage en plein écran, Windows peut la bloquer).
+        La dernière image est gardée : pendant une pause, l'analyse continue dessus."""
         try:
             cam = getattr(self.grab, "cam", None)
             if cam is not None:
@@ -80,7 +81,6 @@ class ScreenSource:
         except Exception:
             pass
         self.grab = _full_screen_grabber()
-        self.last = None
         self.none_streak = self.same_streak = 0
 
     def full(self):
@@ -108,9 +108,9 @@ class ScreenSource:
             f = None
         if f is None:                       # dxcam : rien n'a changé depuis la dernière image
             self.none_streak += 1
-            if self.none_streak > 40:       # ~4 s sans image : capture bloquée, on la recrée
-                self.log("[capture] capture bloquée, redémarrage")
-                self.reset()
+            if self.none_streak > 40:       # ~4 s sans image nouvelle (pause, ou capture bloquée) :
+                self.reset()                # on recrée la capture, sans conséquence si c'est une pause
+                self.none_streak = 0
             f = self.last
         else:
             self.none_streak = 0

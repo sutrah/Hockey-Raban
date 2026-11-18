@@ -28,10 +28,10 @@ import numpy as np
 
 from autocalib import AutoCameraTracker, estimate_camera_center
 from live_capture import FileSource, ScreenSource, static_mask_from_frames
-from live_ocr import NumberVotes, Scoreboard, Worker, back_crop, read_number
+from live_ocr import NumberVotes, Scoreboard, Worker, back_crop, pose_crops, read_number
 from live_state import Kin, Pressure, Recorder, Shifts
 from rink import PRESETS, Rink
-from teams import REF, UNK, TeamClassifier, jersey_feature
+from teams import REF, UNK, TeamClassifier, jersey_feature, referee_score
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 8765
@@ -56,9 +56,11 @@ def calibrate_worker(frames, preset, static):
 
 # ------------------------------------------------------------------ détection
 class Detector:
-    """YOLO (personnes). track() : suivi plein écran ; detect() : image ou zone, sans suivi."""
+    """YOLO (personnes). track() : suivi plein écran ; detect() : image ou zone, sans suivi.
+    Avec un modèle « -pose » (par défaut), chaque joueur a aussi un squelette de 17 points
+    (tête, épaules, coudes, poignets, hanches, genoux, chevilles)."""
 
-    def __init__(self, weights="yolov8s.pt", imgsz=960, conf=0.3, device=None):
+    def __init__(self, weights="yolov8s-pose.pt", imgsz=960, conf=0.3, device=None):
         from ultralytics import YOLO
         self.track_model = YOLO(weights)
         self.det_model = YOLO(weights)
@@ -79,11 +81,19 @@ class Detector:
             return out
         xyxy = r.boxes.xyxy.cpu().numpy()
         ids = r.boxes.id.cpu().numpy().astype(int) if tracked and r.boxes.id is not None else None
+        kps = None
+        if getattr(r, "keypoints", None) is not None and r.keypoints.data is not None and len(r.keypoints.data):
+            kps = r.keypoints.data.cpu().numpy()          # (N, 17, 3) : x, y, confiance
         for i, b in enumerate(xyxy):
             if tracked and ids is None:
                 continue
+            kp = None
+            if kps is not None and i < len(kps):
+                kp = kps[i].copy()
+                kp[:, 0] += ox
+                kp[:, 1] += oy
             out.append(dict(tid=int(ids[i]) if ids is not None else -1,
-                            box=np.array([b[0] + ox, b[1] + oy, b[2] + ox, b[3] + oy]), poly=None))
+                            box=np.array([b[0] + ox, b[1] + oy, b[2] + ox, b[3] + oy]), poly=None, kp=kp))
         return out
 
     def track(self, frame, idx=None):
@@ -114,7 +124,20 @@ class GTDetector:
 
     def _get(self, idx):
         fr = self.frames[idx] if idx is not None and idx < len(self.frames) else {"players": []}
-        return [dict(tid=p["id"], box=np.array(p["box"], float), poly=None) for p in fr["players"]]
+        return [dict(tid=p["id"], box=np.array(p["box"], float), poly=None, kp=self._fake_kp(p["box"]))
+                for p in fr["players"]]
+
+    @staticmethod
+    def _fake_kp(b):
+        """Squelette approximatif (tests) déduit du rectangle : vu de dos."""
+        x1, y1, x2, y2 = b
+        w, h = x2 - x1, y2 - y1
+        P = lambda fx, fy: [x1 + fx * w, y1 + fy * h, 0.9]
+        kp = [P(.5, .08), [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], P(.25, .22), P(.75, .22), P(.15, .38), P(.85, .38),
+              P(.12, .52), P(.88, .52), P(.35, .55), P(.65, .55), P(.33, .75), P(.67, .75), P(.32, .97), P(.68, .97)]
+        kp = np.array(kp, float)
+        kp[0, 2] = 0.1                       # visage non visible : de dos
+        return kp
 
     def track(self, frame, idx=None):
         return self._get(idx)
@@ -281,6 +304,9 @@ class Engine:
         self.contra = {}
         self.prev_small = None
         self.collect_next = {}
+        self.track_hist = {}
+        self.ref_hits = {}
+        self.crossings = {}
         self.collect_count = {}
         self.still_since = None
         self.paused = False
@@ -612,6 +638,8 @@ class Engine:
                 x1, y1, x2, y2 = d["box"]
                 if y2 < 0.3 * Hh or (y2 - y1) < 40:        # tribunes ou trop petit
                     continue
+                if referee_score(frame, d["box"], d.get("kp")) > 0.3:   # arbitre
+                    continue
                 self.clf.add_sample(jersey_feature(frame, d["box"]))
             if len(self.clf.samples) >= 60:
                 try:
@@ -625,6 +653,14 @@ class Engine:
             lab = self.clf.predict(jersey_feature(frame, d["box"])) if self.clf_ready else UNK
             if d["tid"] >= 0:
                 lab = self.clf.vote(d["tid"], lab)
+            # arbitres : maillot rayé (et brassard) repéré grâce au squelette ; 3 images
+            # « rayées » sur une même piste suffisent, l'arbitre reste arbitre ensuite
+            t = d["tid"]
+            if t >= 0 and t not in self.manual_side and (d["box"][3] - d["box"][1]) >= 40:
+                if referee_score(frame, d["box"], d.get("kp")) > 0.3:
+                    self.ref_hits[t] = self.ref_hits.get(t, 0) + 1
+            if self.ref_hits.get(t, 0) >= 3:
+                lab = REF
             d["cluster"] = lab
             self.last_cluster[d["tid"]] = lab
             d["side"] = self.cluster_side.get(lab) if lab in (0, 1) else None
@@ -653,12 +689,7 @@ class Engine:
             self._collect(frame, dets, now)
 
         # croisement de deux joueurs de la même équipe : le suivi peut échanger leurs identités
-        for i, a in enumerate(dets):
-            for b in dets[i + 1:]:
-                if a["cluster"] == b["cluster"] and a["cluster"] in (0, 1) and _iou(a["box"], b["box"]) > 0.25:
-                    for d in (a, b):
-                        if d["tid"] in self.validated:
-                            self.need_check[d["tid"]] = now
+        self._crossing_guard(dets, now)
 
         # --- positions sur la glace, vitesses, présences
         world = []
@@ -843,6 +874,81 @@ class Engine:
         self.validated = {t: k for t, k in self.validated.items() if t in seen_now or t in self.known}
         vis = {(d["side"], d["num"]) for d in dets if d["num"]}
         self.recent_lost = {m["key"] for m in self.known.values() if m["key"] not in vis}
+
+    def _crossing_guard(self, dets, now):
+        """Quand deux joueurs (même équipe) se superposent, le suivi peut échanger leurs pistes.
+        On mémorise position et vitesse de chacun au début du croisement ; à la séparation,
+        on regarde quelle attribution prolonge le mieux les trajectoires et on ré-échange les
+        identités si le suivi s'est trompé. Si c'est indécidable : vérification par le numéro."""
+        by = {d["tid"]: d for d in dets if d["tid"] >= 0}
+        for t, d in by.items():
+            c = np.array([(d["box"][0] + d["box"][2]) / 2, d["box"][3]])     # pieds
+            h = self.track_hist.setdefault(t, deque(maxlen=8))
+            h.append((now, c))
+        ident = lambda t: t in self.validated or t in self.votes.manual
+        # début de croisement
+        items = list(by.values())
+        for i, a in enumerate(items):
+            for b in items[i + 1:]:
+                if a["cluster"] != b["cluster"] or a["cluster"] not in (0, 1):
+                    continue
+                if not (ident(a["tid"]) or ident(b["tid"])):
+                    continue
+                key = tuple(sorted((a["tid"], b["tid"])))
+                if key in self.crossings or _iou(a["box"], b["box"]) < 0.15:
+                    continue
+                st = {}
+                for t in key:
+                    h = self.track_hist.get(t)
+                    if not h or len(h) < 3:
+                        break
+                    (t0, c0), (t1, c1) = h[0], h[-1]
+                    st[t] = (t1, c1, (c1 - c0) / max(t1 - t0, 1e-3))
+                if len(st) == 2:
+                    self.crossings[key] = dict(t=now, st=st, hpx=a["box"][3] - a["box"][1])
+        # fin de croisement
+        for key, X in list(self.crossings.items()):
+            ta, tb = key
+            if now - X["t"] > 4.0 or ta not in by or tb not in by:
+                for t in key:
+                    if t in self.validated:
+                        self.need_check[t] = now
+                del self.crossings[key]
+                continue
+            if _iou(by[ta]["box"], by[tb]["box"]) > 0.05:
+                continue                                # toujours superposés
+            pred = {}
+            for t in key:
+                t1, c1, v = X["st"][t]
+                pred[t] = c1 + v * (now - t1)
+            ca = np.array([(by[ta]["box"][0] + by[ta]["box"][2]) / 2, by[ta]["box"][3]])
+            cb = np.array([(by[tb]["box"][0] + by[tb]["box"][2]) / 2, by[tb]["box"][3]])
+            same = np.linalg.norm(ca - pred[ta]) + np.linalg.norm(cb - pred[tb])
+            swap = np.linalg.norm(ca - pred[tb]) + np.linalg.norm(cb - pred[ta])
+            if swap < 0.6 * same and same > 0.3 * X["hpx"]:
+                self._swap_identities(ta, tb)
+            elif not (same < 0.6 * swap):
+                for t in key:                           # indécidable : on revérifie par le numéro
+                    if t in self.validated:
+                        self.need_check[t] = now
+            del self.crossings[key]
+
+    def _swap_identities(self, ta, tb):
+        for dct in (self.validated, self.votes.manual, self.manual_side):
+            va, vb = dct.pop(ta, None), dct.pop(tb, None)
+            if vb is not None:
+                dct[ta] = vb
+            if va is not None:
+                dct[tb] = va
+        for dct in (self.votes.votes, self.votes.reads, self.votes.raw2):
+            va, vb = dct.pop(ta, None), dct.pop(tb, None)
+            if vb is not None:
+                dct[ta] = vb
+            if va is not None:
+                dct[tb] = va
+        na = self.validated.get(ta, ("", "?"))[1]
+        nb = self.validated.get(tb, ("", "?"))[1]
+        self.log(f"[croisement] le suivi avait échangé deux joueurs : identités remises (#{na} / #{nb})")
 
     def _apercu(self, frame, H, dets):
         """Image de diagnostic : lignes de la patinoire projetées (vert = suivi accepté,
@@ -1034,15 +1140,26 @@ class Engine:
                 self.pause_done.add(d["tid"])
                 break                       # un joueur par image : la file reste courte
             return
-        for _, d in sorted(cands, key=lambda t: t[0])[: self.a.ocr_per_frame]:
-            # grands joueurs : une lecture sur deux inclut les manches
-            sleeves = (d["box"][3] - d["box"][1]) > 2 * self.a.min_px and self.next_ocr.get(("s", d["tid"]), 0) <= now
-            crop = back_crop(frame, d["box"], sleeves=sleeves)
-            if sleeves:
-                self.next_ocr[("s", d["tid"])] = now + 1.2
-            if crop is None:
-                continue
-            if self.ocr.put(dict(crop=crop, tid=d["tid"], cluster=d["cluster"], side=d["side"], box=d["box"].copy())):
+        def facing(d):
+            f, _ = pose_crops(frame, d.get("kp"))
+            return f
+        # priorité aux joueurs vus de dos (numéro visible), puis profil ; jamais de face
+        cands = [c for c in cands if facing(c[1]) != "face"]
+        cands.sort(key=lambda t: (facing(t[1]) != "dos", t[0]))
+        for _, d in cands[: self.a.ocr_per_frame]:
+            f, crops = pose_crops(frame, d.get("kp"))
+            if not crops:
+                # pas de squelette exploitable : cadrage d'après le rectangle (une fois sur deux les manches)
+                sleeves = (d["box"][3] - d["box"][1]) > 2 * self.a.min_px and self.next_ocr.get(("s", d["tid"]), 0) <= now
+                crops = [back_crop(frame, d["box"], sleeves=sleeves)]
+                if sleeves:
+                    self.next_ocr[("s", d["tid"])] = now + 1.2
+            ok = False
+            for crop in crops:
+                if crop is not None and self.ocr.put(dict(crop=crop, tid=d["tid"], cluster=d["cluster"],
+                                                          side=d["side"], box=d["box"].copy())):
+                    ok = True
+            if ok:
                 self.next_ocr[d["tid"]] = now + 0.6
         if len(self.kin_tid) > 300:              # ménage des joueurs non identifiés disparus
             self.kin_tid = {t: k for t, k in self.kin_tid.items() if k.last_t and now - k.last_t < 10}
@@ -1054,6 +1171,12 @@ class Engine:
         players = []
         for d in dets:
             if d["cluster"] == REF:
+                if d.get("kp") is not None:
+                    x1, y1, x2, y2 = d["box"]
+                    players.append(dict(tid=int(d["tid"]), ref=True, side=None, num=None,
+                                        box=[round(x1 / W, 4), round(y1 / Hh, 4), round(x2 / W, 4), round(y2 / Hh, 4)],
+                                        kp=[[round(float(x) / W, 4), round(float(y) / Hh, 4)] if c > 0.35 else None
+                                            for x, y, c in d["kp"]]))
                 continue
             x1, y1, x2, y2 = d["box"]
             side, num = d["side"], d["num"]
@@ -1064,6 +1187,9 @@ class Engine:
             k = d.get("kin")
             p = dict(tid=int(d["tid"]), box=[round(x1 / W, 4), round(y1 / Hh, 4), round(x2 / W, 4), round(y2 / Hh, 4)],
                      side=side, num=num)
+            kp = d.get("kp")
+            if kp is not None:
+                p["kp"] = [[round(float(x) / W, 4), round(float(y) / Hh, 4)] if c > 0.35 else None for x, y, c in kp]
             if num and side:
                 info = self._roster(side).get(num, {})
                 p["name"] = info.get("short", "")
@@ -1144,7 +1270,8 @@ def main():
     ap.add_argument("--recalib", action="store_true", help="refait la calibration de la patinoire")
     ap.add_argument("--our-color", default=None, choices=["sombre", "clair"],
                     help="maillot de ton équipe (défaut : sombre à domicile, clair à l'extérieur)")
-    ap.add_argument("--weights", default="yolov8s.pt")
+    ap.add_argument("--weights", default="yolov8s-pose.pt",
+                    help="détecteur (défaut : avec squelette ; yolov8s.pt = sans squelette)")
     ap.add_argument("--imgsz", type=int, default=960)
     ap.add_argument("--conf", type=float, default=0.3)
     ap.add_argument("--device", default=None)

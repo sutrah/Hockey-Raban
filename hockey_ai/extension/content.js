@@ -29,7 +29,9 @@
   }
 
   // --------------------------------------------------------------- état
-  let lastSig = "", sigT = 0, relocated = true;
+  let lastSig = "", sigT = 0, relocated = true, hover = null;
+  // os du squelette (points COCO : 5/6 épaules, 7/8 coudes, 9/10 poignets, 11/12 hanches, 13/14 genoux, 15/16 chevilles)
+  const BONES = [[5, 6], [5, 7], [7, 9], [6, 8], [8, 10], [5, 11], [6, 12], [11, 12], [11, 13], [13, 15], [12, 14], [14, 16]];
   let video = null, state = null, roster = null, prevBoxes = {}, lastStateT = 0;
   let mode = "team", focus = "our", selected = [], hidden = false, picking = false, markersOn = false;
 
@@ -158,30 +160,72 @@
   }
 
   // identification par clic : on clique un joueur, on choisit son nom
-  cv.addEventListener("click", (e) => {
-    if (!picking || !state) return;
+  function playerAt(e) {
     const r = cv.getBoundingClientRect();
     const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
     let best = null, bd = 1e9;
-    for (const p of state.players) {
+    for (const p of (state ? state.players : [])) {
+      if (p.ref) continue;                  // un arbitre ne s'identifie pas
       const [x1, y1, x2, y2] = p.box;
       const d = Math.hypot((x1 + x2) / 2 - x, (y1 + y2) / 2 - y);
       if (x > x1 - 0.02 && x < x2 + 0.02 && y > y1 - 0.03 && y < y2 + 0.02 && d < bd) { best = p; bd = d; }
     }
-    if (!best) return;
+    return best;
+  }
+  cv.addEventListener("mousemove", (e) => { if (picking) { const p = playerAt(e); hover = p ? p.tid : null; } });
+  // Identification : clic sur le squelette -> pause, choix du nom, reprise automatique
+  let resumeAfter = false, menuOpen = false;
+  function closeMenu() {
+    $("idmenu").classList.add("hide");
+    menuOpen = false;
+    picking = false; cv.classList.remove("pick"); $("idBtn").classList.remove("on");
+    if (resumeAfter && video) { const pr = video.play(); if (pr && pr.catch) pr.catch(() => {}); }
+    resumeAfter = false;
+  }
+  function openMenu(best, clientX) {
+    const r = cv.getBoundingClientRect();
+    if (video && !video.paused) { video.pause(); resumeAfter = true; }
     const m = $("idmenu");
     const list = (side) => (roster ? roster[side] : []).map((p) =>
-      `<label data-side="${side}" data-num="${p.num}"><b>${p.num}</b> ${p.name}</label>`).join("");
-    m.innerHTML = `<h4>${roster ? roster.names[focus] : ""} · qui est-ce ?</h4>${list(focus)}`;
-    m.style.left = Math.min(e.clientX - r.left, r.width - 200) + "px";
+      `<label data-side="${side}" data-num="${p.num}"><b>${p.num}</b> ${p.name}
+       <span style="color:${C.dim}">${p.pos || ""}</span></label>`).join("");
+    m.innerHTML = `<h4>${roster ? roster.names[focus] : ""} · qui est-ce ?${best.num ? ` (actuellement #${best.num})` : ""}</h4>
+      ${list(focus)}<label data-cancel="1" style="color:${C.dim}">✕ Annuler (Échap)</label>`;
+    m.style.left = Math.max(0, Math.min(clientX - r.left, r.width - 210)) + "px";
     m.style.top = "8px";
     m.classList.remove("hide");
-    m.querySelectorAll("label").forEach((l) => l.onclick = () => {
-      send({ type: "assign", tid: best.tid, side: l.dataset.side, num: l.dataset.num, box: best.box });
-      m.classList.add("hide");
-      picking = false; cv.classList.remove("pick"); $("idBtn").classList.remove("on");
+    menuOpen = true;
+    m.querySelectorAll("label").forEach((l) => l.onclick = (ev) => {
+      ev.stopPropagation();
+      if (!l.dataset.cancel) send({ type: "assign", tid: best.tid, side: l.dataset.side, num: l.dataset.num, box: best.box });
+      closeMenu();
     });
+  }
+  document.addEventListener("keydown", (e) => { if (menuOpen && e.key === "Escape") { e.preventDefault(); closeMenu(); } }, true);
+  cv.addEventListener("click", (e) => {
+    if (!picking || !state) return;
+    const best = playerAt(e);
+    if (best) openMenu(best, e.clientX);
   });
+  // clic direct sur un joueur de l'équipe analysée, même hors du mode « Identifier » : on
+  // intercepte le clic avant le lecteur vidéo (sinon il mettrait juste en pause / lecture)
+  function playerAtPoint(clientX, clientY) {
+    if (!state || !video || hidden) return null;
+    const r = video.getBoundingClientRect();
+    if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) return null;
+    const p = playerAt({ clientX, clientY });
+    return p && p.side === focus && p.kp ? p : null;
+  }
+  for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
+    window.addEventListener(type, (e) => {
+      if (picking || menuOpen || e.button !== 0) return;
+      if (e.composedPath && e.composedPath().includes(host)) return;     // clic dans nos panneaux
+      const p = playerAtPoint(e.clientX, e.clientY);
+      if (!p) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (type === "click") openMenu(p, e.clientX);
+    }, true);
+  }
 
   // ------------------------------------------------------------ panneau
   const fmt = (s) => s == null ? "–" : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
@@ -318,7 +362,37 @@
         if (k < 3) { const dx = ((x1 + x2) - (pv.box[0] + pv.box[2])) / 2 * k, dy = (y2 - pv.box[3]) * k; x1 += dx; x2 += dx; y1 += dy; y2 += dy; }
       }
       const cx = (x1 + x2) / 2 * W, top = y1 * H;
+      if (p.ref) {                         // arbitre : squelette gris + « ARB », jamais cliquable
+        if (p.kp) {
+          ctx.strokeStyle = "rgba(200,200,200,.7)"; ctx.lineWidth = 1.4; ctx.beginPath();
+          for (const [a, b2] of BONES) { const A = p.kp[a], B = p.kp[b2]; if (!A || !B) continue;
+            ctx.moveTo(A[0] * W, A[1] * H); ctx.lineTo(B[0] * W, B[1] * H); }
+          ctx.stroke();
+        }
+        ctx.fillStyle = "rgba(10,14,22,.75)"; ctx.fillRect(cx - 15, top - 18, 30, 14);
+        ctx.fillStyle = "#ddd"; ctx.font = "700 10px sans-serif"; ctx.textAlign = "center";
+        ctx.fillText("ARB", cx, top - 10); ctx.textAlign = "start";
+        ctx.font = `600 ${fs2}px Inter, Segoe UI, sans-serif`;
+        continue;
+      }
       const col = p.side ? C[p.side] : "rgba(255,255,255,.6)";
+      // squelette : épaisseur plus forte en mode identification et pour le joueur survolé
+      if (p.kp && (p.side === focus || picking)) {
+        const dx = (x1 - p.box[0]) * W, dy = (y1 - p.box[1]) * H;
+        const hot = picking && hover === p.tid;
+        ctx.strokeStyle = col; ctx.globalAlpha = p.side === focus ? (hot ? 1 : 0.75) : 0.35;
+        ctx.lineWidth = hot ? 4 : (picking ? 2.5 : 1.6); ctx.lineCap = "round";
+        ctx.beginPath();
+        for (const [a, b] of BONES) {
+          const A = p.kp[a], B = p.kp[b];
+          if (!A || !B) continue;
+          ctx.moveTo(A[0] * W + dx, A[1] * H + dy); ctx.lineTo(B[0] * W + dx, B[1] * H + dy);
+        }
+        ctx.stroke();
+        const nose = p.kp[0] || p.kp[1] || p.kp[2];
+        if (nose) { ctx.beginPath(); ctx.arc(nose[0] * W + dx, nose[1] * H + dy, hot ? 5 : 3.5, 0, 7); ctx.stroke(); }
+        ctx.globalAlpha = 1;
+      }
       if (!p.num) {                    // pas encore identifié : simple point de couleur d'équipe
         if (p.side && state.mode === "team") { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(cx, top - 6, 3.5, 0, 7); ctx.fill(); }
         continue;

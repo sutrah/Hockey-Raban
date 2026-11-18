@@ -34,6 +34,8 @@
   const BONES = [[5, 6], [5, 7], [7, 9], [6, 8], [8, 10], [5, 11], [6, 12], [11, 12], [11, 13], [13, 15], [12, 14], [14, 16]];
   let video = null, state = null, roster = null, prevBoxes = {}, lastStateT = 0, shown = {}, lagMs = null;
   let smooth = {}, lastDraw = 0;
+  let leadMs = 80;                       // anticipation (ms), touches [ et ] pour régler
+  try { const v = parseInt(localStorage.getItem("hockeyai_lead"), 10); if (!isNaN(v)) leadMs = v; } catch (e) {}
   let mode = "team", focus = "our", selected = [], hidden = false, picking = false, markersOn = false;
 
   function onMsg(m) {
@@ -133,6 +135,10 @@
   $("swapBtn").onclick = () => send({ type: "swap_colors" });
   document.addEventListener("keydown", (e) => {
     if (e.altKey && (e.key === "h" || e.key === "H")) toggleHidden();
+    if (e.key === "[" || e.key === "]") {               // anticipation du déplacement
+      leadMs = Math.max(-100, Math.min(400, leadMs + (e.key === "]" ? 20 : -20)));
+      try { localStorage.setItem("hockeyai_lead", String(leadMs)); } catch (er) {}
+    }
     const typing = /INPUT|TEXTAREA/.test((document.activeElement || {}).tagName || "");
     if (!typing && !e.altKey && !e.ctrlKey && (e.key === "i" || e.key === "I")) {   // touche I : identifier
       picking = !picking; cv.classList.toggle("pick", picking); $("idBtn").classList.toggle("on", picking);
@@ -254,7 +260,7 @@
     const clk = s.clock && s.clock.remaining != null ? ` · P${s.clock.period} ${fmt(s.clock.remaining)}${s.clock.running ? "" : " ⏸"}` : "";
     const mail = st.our_color && roster && roster.abbr ? ` · ${roster.abbr.our} en ${st.our_color}` : "";
     const pz = (s.paused ? " · ⏸ pause : identification (clique sur un squelette)" : "")
-      + (lagMs != null ? ` · retard ${lagMs} ms` : "");
+      + (lagMs != null ? ` · retard ${lagMs} ms` : "") + ` · anticipation ${leadMs} ms ([ ])`;
     $("status").textContent = `${st.match || "sans feuille de match"}${clk} · ${calib}${mail} · ${s.fps} im/s${pz}`;
     let h = "";
     for (const p of s.pp || []) {
@@ -385,7 +391,7 @@
       const missing = nowS - S.seen;
       if (missing > 0.6) continue;                       // perdu depuis trop longtemps
       // position prédite à l'instant de l'affichage : capture + vitesse x (maintenant - capture)
-      const dt = Math.min(Math.max(nowS - S.ts, 0), 0.6);
+      const dt = Math.min(Math.max(nowS - S.ts, 0), 0.6) + leadMs / 1000;   // + anticipation réglable
       const vx = p.v ? p.v[0] : 0, vy = p.v ? p.v[1] : 0;
       // position prédite à maintenant (capture + vitesse x temps écoulé) : suit le joueur sans
       // retard ; seul le petit saut à l'arrivée d'une nouvelle mesure est absorbé en ~0,1 s

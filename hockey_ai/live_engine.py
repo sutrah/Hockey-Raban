@@ -323,6 +323,9 @@ class Engine:
         self.next_recog = {}
         self.pose_smooth = {}
         self.goalie_track = {}
+        self.ice_hist = {}
+        self.seen_tids = set()
+        self.new_tracks = 0
         self.goalie_logged = set()
         self.defends = {}
         self.vel_smooth = {}
@@ -754,8 +757,12 @@ class Engine:
         # --- détection
         dets = self._detect(idx, frame, now)
         # public, banc, tribunes : on ne garde que les personnes qui ont les pieds sur la glace
-        dets = [d for d in dets if self._on_ice(frame, d)]
+        dets = [d for d in dets if self._keep_on_ice(frame, d)]
         self._smooth_pose(dets, now)
+        for d in dets:                                    # diagnostic : pistes nouvelles (= joueurs perdus puis retrouvés)
+            if d["tid"] >= 0 and d["tid"] not in self.seen_tids:
+                self.seen_tids.add(d["tid"])
+                self.new_tracks += 1
         boxes = [d["box"] for d in dets]
 
         # --- calibration : on collecte quelques images, puis estimation en arrière-plan
@@ -929,6 +936,8 @@ class Engine:
                 loc += f" (dernier essai {self.cam.last_try[1]:.2f}, seuil {self.cam.accept:.2f})"
             ident = sum(1 for d in dets if d["num"])
             lum = float(frame[::8, ::8].mean())
+            loc += f" · nouvelles pistes {self.new_tracks}/10 s"
+            self.new_tracks = 0
             self.log(f"[direct] {self.fps:.1f} im/s · patinoire repérée {loc} · {len(dets)} joueurs vus, "
                      f"{ident} identifiés · bandeau {'lu' if self.sb.box else 'non trouvé'} · "
                      f"image {frame.shape[1]}x{frame.shape[0]}{' NOIRE' if lum < 12 else ''}")
@@ -1148,6 +1157,19 @@ class Engine:
             live = {d["tid"] for d in dets}
             self.pose_smooth = {k: v for k, v in self.pose_smooth.items() if k in live}
 
+    def _keep_on_ice(self, frame, d):
+        """Filtre public/banc avec mémoire : un joueur déjà vu sur la glace (3 fois) reste
+        gardé ; il n'est retiré qu'après 8 échecs de suite. Le public ne passe jamais."""
+        t = d["tid"]
+        ok = self._on_ice(frame, d)
+        st = self.ice_hist.setdefault(t, [0, 0]) if t >= 0 else [0, 0]   # [réussites, échecs de suite]
+        if ok:
+            st[0] += 1
+            st[1] = 0
+            return True
+        st[1] += 1
+        return st[0] >= 3 and st[1] < 8
+
     def _on_ice(self, frame, d):
         """Pieds sur la glace ? Zone sous les pieds claire et peu colorée (filet gommé).
         Une fois la patinoire repérée, on vérifie aussi la position réelle sur la piste."""
@@ -1160,15 +1182,16 @@ class Engine:
                 return False
         if y2 >= H - 2:
             return True                                   # pieds coupés par le bas de l'image
-        px1, px2 = int(max(0, x1 - 0.1 * w)), int(min(W, x2 + 0.1 * w))
-        py1, py2 = int(max(0, y2 - 0.04 * h)), int(min(H, y2 + 0.12 * h + 2))
+        # zone nettement SOUS les pieds (pas les patins ni les jambières, souvent noirs)
+        px1, px2 = int(max(0, x1 - 0.2 * w)), int(min(W, x2 + 0.2 * w))
+        py1, py2 = int(max(0, y2 + 0.01 * h)), int(min(H, y2 + 0.12 * h + 3))
         patch = frame[py1:py2, px1:px2]
         if patch.size == 0:
             return True
         patch = cv2.morphologyEx(patch, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
         lab = cv2.cvtColor(patch, cv2.COLOR_BGR2LAB).astype(np.int16)
         ice = (lab[..., 0] > 135) & (np.hypot(lab[..., 1] - 128, lab[..., 2] - 128) < 30)
-        return ice.mean() > 0.25
+        return ice.mean() > 0.2
 
     def _crossing_guard(self, dets, now):
         """Quand deux joueurs (même équipe) se superposent, le suivi peut échanger leurs pistes.

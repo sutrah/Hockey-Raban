@@ -114,7 +114,7 @@ class Scoreboard:
             return
         if now < self.next_read:
             return
-        self.next_read = now + 1.0
+        self.next_read = now + 0.25        # 4 lectures/s : repère temporel précis pour la mémoire du match
         x1, y1, x2, y2 = self.box
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
@@ -134,7 +134,7 @@ class Scoreboard:
             return
         if self.remaining is not None and rem != self.remaining:
             self.last_change = now
-        self.running = (now - self.last_change) < 2.5
+        self.running = (now - self.last_change) < 1.6
         # nouvelle période : le chrono remonte
         if self.remaining is not None and rem > self.remaining + 60 and self.period:
             self.period += 1
@@ -351,3 +351,31 @@ class Worker(threading.Thread):
                 yield self.out.get_nowait()
             except queue.Empty:
                 return
+
+
+class PlayerRecognizer:
+    """Modèle entraîné par train_numeros.py (modeles/joueurs_<EQUIPE>.pt) : reconnaît un joueur
+    à son image entière. Renvoie (numéro, probabilité)."""
+
+    def __init__(self, path):
+        import torch
+        from train_numeros import build_model
+        d = torch.load(path, map_location="cpu", weights_only=False)
+        self.classes = d["classes"]
+        self.size = tuple(d.get("size", (96, 192)))
+        self.dev = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = build_model(len(self.classes), torch, pretrained=False)
+        self.model.load_state_dict(d["state"])
+        self.model.to(self.dev).eval()
+        self.torch = torch
+        self.acc = d.get("val_acc")
+
+    def predict(self, crops):
+        from train_numeros import to_tensor
+        if not crops:
+            return []
+        torch = self.torch
+        with torch.no_grad():
+            x = torch.stack([to_tensor(c, torch) for c in crops]).to(self.dev)
+            p = torch.softmax(self.model(x), 1).cpu().numpy()
+        return [(self.classes[int(i.argmax())], float(i.max())) for i in p]

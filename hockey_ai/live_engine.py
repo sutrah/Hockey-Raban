@@ -21,17 +21,18 @@ import queue
 import re
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 
 import cv2
 import numpy as np
 
 from autocalib import AutoCameraTracker, estimate_camera_center
 from live_capture import FileSource, ScreenSource, static_mask_from_frames
-from live_ocr import NumberVotes, Scoreboard, Worker, back_crop, pose_crops, read_number
+from live_ocr import NumberVotes, PlayerRecognizer, Scoreboard, Worker, back_crop, pose_crops, read_number
+from live_memory import MatchMemory, tc_key
 from live_state import Kin, Pressure, Recorder, Shifts
 from rink import PRESETS, Rink
-from teams import REF, UNK, TeamClassifier, jersey_feature, referee_score
+from teams import REF, UNK, TeamClassifier, jersey_feature, kit_features, otsu_threshold, referee_score
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 8765
@@ -290,6 +291,11 @@ class Engine:
         if self.match:
             name += f"_{self.match.abbr['home']}-{self.match.abbr['away']}"
         self.rec = Recorder(os.path.join(HERE, "matchs"), name)
+        # mémoire du match (identités par instant de jeu), partagée entre tous les visionnages
+        mid = str(self.a.match or (os.path.splitext(os.path.basename(self.a.match_json))[0] if self.a.match_json
+                                   else getattr(self.feed, "mid", name)))
+        self.memory = MatchMemory(os.path.join(HERE, "matchs", f"memoire_{mid}.json"), self.log)
+        self.mem_key = None
         self.last_score = None
         self.calib_t = 0.0
         self.last_cluster = {}
@@ -306,6 +312,20 @@ class Engine:
         self.collect_next = {}
         self.track_hist = {}
         self.ref_hits = {}
+        self.ref_obs = {}
+        self.lum_samples = []
+        self.red_samples = []
+        self.red_team = None
+        self.lum_thr = 110.0
+        self.team_votes = {}
+        self.striped = {}
+        self.ref_disabled = False
+        self.next_recog = {}
+        self.pose_smooth = {}
+        self.goalie_track = {}
+        self.goalie_logged = set()
+        self.defends = {}
+        self.vel_smooth = {}
         self.crossings = {}
         self.collect_count = {}
         self.still_since = None
@@ -330,6 +350,20 @@ class Engine:
             OCR.reader()
         except Exception as ex:
             self.log(f"[ocr] lecture de texte indisponible ({ex}) : numéros et bandeau désactivés")
+        # modèles de reconnaissance des joueurs entraînés sur les vignettes (train_numeros.py)
+        self.recog = {}
+        if self.match:
+            for side in ("our", "them"):
+                ab = self.match.abbr[self._side_key(side)]
+                path = os.path.join(HERE, "modeles", f"joueurs_{ab}.pt")
+                if os.path.exists(path):
+                    try:
+                        self.recog[side] = PlayerRecognizer(path)
+                        acc = self.recog[side].acc
+                        self.log(f"[modèle] reconnaissance des joueurs {ab} : {len(self.recog[side].classes)} joueurs"
+                                 + (f", justesse {100 * acc:.0f} % à l'entraînement" if acc is not None else ""))
+                    except Exception as ex:
+                        self.log(f"[modèle] {path} illisible : {ex}")
         try:
             dummy = np.zeros((360, 640, 3), np.uint8)
             self.det.detect(dummy)
@@ -491,12 +525,29 @@ class Engine:
             self.selected = [(p["side"], str(p["num"])) for p in msg.get("players", [])
                              if p.get("side") == self.focus][:1]
             self.locked = {k: v for k, v in self.locked.items() if k in self.selected}
+        elif t == "referee":                   # le coach désigne (ou retire) un arbitre
+            tid = int(msg.get("tid"))
+            self.ref_hits[tid] = 1000 if msg.get("is_ref") else -10000
+            if msg.get("is_ref"):
+                self.validated.pop(tid, None); self.votes.manual.pop(tid, None); self.manual_side.pop(tid, None)
+            self.log(f"[arbitres] piste {tid} : {'arbitre' if msg.get('is_ref') else 'pas un arbitre'} (à la main)")
         elif t == "assign":                    # le coach a cliqué un joueur et choisi son nom
             tid, side, num = msg.get("tid"), msg.get("side"), str(msg.get("num"))
+            if tid is not None:
+                self.ref_hits[int(tid)] = -10000     # nommé comme joueur : jamais arbitre
             if tid is not None:
                 self.votes.manual[int(tid)] = num
                 self.manual_side[int(tid)] = side
                 self.validated[int(tid)] = (side, num)
+                for t in list(self.votes.manual):        # la dernière identification à la main l'emporte
+                    if t != int(tid) and self.votes.manual[t] == num and self.manual_side.get(t) == side:
+                        self.votes.manual.pop(t, None); self.manual_side.pop(t, None); self.validated.pop(t, None)
+                for t, k in list(self.validated.items()):
+                    if t != int(tid) and k == (side, num):
+                        self.validated.pop(t, None)
+                n = self.memory.correct_track(int(tid), side, num)
+                if n:
+                    self.log(f"[mémoire] séquence précédente du joueur corrigée ({n} instants)")
                 info = self._roster(side).get(num, {})
                 self.log(f"[clic] {self._name(side)} #{num} {info.get('short', '')} attribué")
                 cl = self.last_cluster.get(int(tid))
@@ -539,7 +590,90 @@ class Engine:
                     self.sb.update(f)
                 except Exception as ex:
                     self.log(f"[bandeau] erreur de lecture : {ex}")
-            time.sleep(0.5)
+            time.sleep(0.08)
+
+    def timecode(self, now):
+        """(temps de jeu, fraction, arrêt) d'après le chrono du bandeau, ou None."""
+        gs = self.sb.game_seconds
+        if gs is None or not self.sb.box:
+            return None
+        since = now - (self.sb.last_change or now)
+        if self.sb.running:
+            return gs, min(max(since, 0.0), 0.99), None
+        return gs, 0.0, since
+
+    def _restore_from_memory(self, dets, now):
+        """Remet les identités enregistrées pour cet instant (relecture du même match)."""
+        tc = self.timecode(now)
+        if tc is None or not self.memory.frames:
+            return
+        entries = self.memory.lookup(*tc)
+        if not entries:
+            return
+        W, Hh = self.size
+        session_manual = {(self.manual_side.get(t), n) for t, n in self.votes.manual.items()}
+        pts = []
+        for d in dets:
+            if d["tid"] < 0 or d["tid"] in self.votes.manual or d["cluster"] == REF:
+                continue
+            x1, y1, x2, y2 = d["box"]
+            pts.append((d, ((x1 + x2) / 2 / W, y2 / Hh), (y2 - y1) / Hh))
+        # regroupe les entrées par identité, garde la meilleure (main récente > auto)
+        by_id = {}
+        for en in entries:
+            if en[1]:                                    # entrées sans nom : ignorées
+                by_id.setdefault((en[0], en[1]), []).append(en)
+        cands = []
+        for ident, ens in by_id.items():
+            if ident in session_manual:                  # déjà fixé à la main dans cette séance
+                continue
+            en = MatchMemory.best_identity(ens)
+            for d, (x, y), h in pts:
+                if d["side"] and d["side"] != en[0]:
+                    continue
+                dist = np.hypot(x - en[2], y - en[3])
+                if dist < max(0.6 * h, 0.015):
+                    cands.append((dist, ident, en, d))
+        used_id, used_det = set(), set()
+        # main avant auto ; entre deux identifications à la main, la plus récente l'emporte
+        for dist, ident, en, d in sorted(cands, key=lambda c: (c[2][5] != "main", -c[2][6], c[0])):
+            if ident in used_id or d["tid"] in used_det:
+                continue
+            cur = self.validated.get(d["tid"])
+            if cur == ident:
+                used_id.add(ident); used_det.add(d["tid"])
+                continue
+            if cur is not None and en[5] != "main":
+                continue                                 # une identité auto n'écrase rien
+            used_id.add(ident); used_det.add(d["tid"])
+            side, num = ident
+            self.validated[d["tid"]] = (side, num)
+            if en[5] == "main":
+                self.votes.manual[d["tid"]] = num
+                self.manual_side[d["tid"]] = side
+            for t, k in list(self.validated.items()):    # un numéro, un seul joueur
+                if t != d["tid"] and k == ident and t not in self.votes.manual:
+                    self.validated.pop(t, None)
+
+    def _record_memory(self, dets, now):
+        tc = self.timecode(now)
+        if tc is None:
+            return
+        key = tc_key(*tc)
+        if key == self.mem_key:
+            return
+        self.mem_key = key
+        W, Hh = self.size
+        entries = []
+        for d in dets:
+            # tous les joueurs suivis, même sans nom : un clic plus tard remplira leur passé
+            if d.get("side") and d["tid"] >= 0 and d.get("cluster") != REF:
+                x1, y1, x2, y2 = d["box"]
+                num = d.get("num")
+                src = "main" if d["tid"] in self.votes.manual else ("auto" if num else "?")
+                entries.append((d["side"], num, (x1 + x2) / 2 / W, y2 / Hh, (y2 - y1) / Hh, src, int(d["tid"])))
+        if entries:
+            self.memory.record(key, entries)
 
     # ------------------------------------------------------------ temps de jeu
     def game_time(self, now, dtw):
@@ -587,11 +721,13 @@ class Engine:
     # -------------------------------------------------------------- 1 image
     def process(self, idx, frame, now, dtw):
         a = self.a
+        self.cap_ts = time.time()                         # instant de la capture (horloge du PC)
         self.latest = frame
         game_t = self.game_time(now, dtw)
         if self.sb.period and self.sb.period != self.last_period:
             if self.last_period is not None:       # changement de côté à chaque période
                 self.pressure.reset_side()
+                self.defends = {}
                 self.rec.event(game_t, "periode", periode=self.sb.period)
             self.last_period = self.sb.period
         if self.sb.score and self.sb.score != self.last_score:
@@ -599,6 +735,7 @@ class Engine:
                 self.rec.event(game_t, "score", score=list(self.sb.score))
             self.last_score = self.sb.score
 
+        # (le lissage du squelette se fait après la détection, voir _smooth_pose)
         # --- vidéo en pause ? (image identique depuis plus d'1 s) -> lecture approfondie des numéros
         # vraie pause = image STRICTEMENT figée (en jeu, même caméra immobile, le bruit de la
         # compression et les joueurs font bouger l'image bien plus que ce seuil)
@@ -616,6 +753,9 @@ class Engine:
 
         # --- détection
         dets = self._detect(idx, frame, now)
+        # public, banc, tribunes : on ne garde que les personnes qui ont les pieds sur la glace
+        dets = [d for d in dets if self._on_ice(frame, d)]
+        self._smooth_pose(dets, now)
         boxes = [d["box"] for d in dets]
 
         # --- calibration : on collecte quelques images, puis estimation en arrière-plan
@@ -630,44 +770,82 @@ class Engine:
                     self.static = static_mask_from_frames(self.calib_frames)
                     self._calibrate_async()
         H = self.cam.update(idx, frame, boxes) if self.cam is not None else None
+        self._last_H = H
 
-        # --- équipes (couleurs apprises sur les premières secondes)
-        if not self.clf_ready:
-            Hh = frame.shape[0]
-            for d in dets:
-                x1, y1, x2, y2 = d["box"]
-                if y2 < 0.3 * Hh or (y2 - y1) < 40:        # tribunes ou trop petit
-                    continue
-                if referee_score(frame, d["box"], d.get("kp")) > 0.3:   # arbitre
-                    continue
-                self.clf.add_sample(jersey_feature(frame, d["box"]))
-            if len(self.clf.samples) >= 60:
-                try:
-                    self.clf.fit()
-                    self.clf_ready = True
-                    self.log("[équipes] couleurs des maillots apprises")
-                except Exception:
-                    pass
+        # --- équipes : règles explicites, pas de regroupement automatique
+        #   torse sombre = équipe en maillot foncé (cluster 0), torse clair = maillot clair (1) ;
+        #   culotte rouge = équipe claire du jour (Orléans : maillot blanc, culotte rouge) ;
+        #   doute = pas d'équipe (squelette gris). Le seuil sombre/clair est calculé sur les
+        #   joueurs du match (méthode d'Otsu), puis voté par joueur suivi (70 % d'accord).
+        Hh = frame.shape[0]
+        feats = {}
+        for d in dets:
+            x1, y1, x2, y2 = d["box"]
+            if (y2 - y1) < 40:
+                continue
+            f = kit_features(frame, d["box"], d.get("kp"))
+            if f is not None:
+                feats[id(d)] = f
+                if not self.clf_ready and self.ref_hits.get(d["tid"], 0) < 100:
+                    self.lum_samples.append(f[0])
+                    self.red_samples.append(f[1])
+        if not self.clf_ready and len(self.lum_samples) >= 80:
+            self.lum_thr = otsu_threshold(self.lum_samples)
+            dark = [v for v in self.lum_samples if v < self.lum_thr]
+            light = [v for v in self.lum_samples if v >= self.lum_thr]
+            self.clf_ready = True
+            self.clf.centers = np.array([[np.median(dark) if dark else 50, 0, 0], [np.median(light) if light else 200, 0, 0]])
+            # culotte rouge caractéristique d'une des deux équipes ? (ex. Orléans : maillot blanc, culotte rouge)
+            rl = [r for v, r in zip(self.lum_samples, self.red_samples) if v >= self.lum_thr]
+            rd = [r for v, r in zip(self.lum_samples, self.red_samples) if v < self.lum_thr]
+            ml, md = (np.median(rl) if rl else 0), (np.median(rd) if rd else 0)
+            self.red_team = 1 if (ml > 0.25 and md < 0.1) else (0 if (md > 0.25 and ml < 0.1) else None)
+            if self.red_team is not None:
+                self.log(f"[équipes] culotte rouge = équipe en maillot {'clair' if self.red_team == 1 else 'sombre'}")
+            self.log(f"[équipes] maillots sombres ≈ {self.clf.centers[0][0]:.0f}, clairs ≈ {self.clf.centers[1][0]:.0f} "
+                     f"(seuil {self.lum_thr:.0f})")
         self.last_cluster = {}
         for d in dets:
-            lab = self.clf.predict(jersey_feature(frame, d["box"])) if self.clf_ready else UNK
+            f = feats.get(id(d))
+            lab = UNK
+            if self.clf_ready and f is not None:
+                L, red = f
+                margin = 0.22 * abs(self.clf.centers[1][0] - self.clf.centers[0][0])   # zone de doute
+                rt = self.red_team
+                if rt is not None and red > 0.3:
+                    lab = rt                                  # culotte rouge : jamais l'autre équipe
+                elif L < self.lum_thr - margin and not (rt == 1 and red > 0.15):
+                    lab = 0
+                elif L > self.lum_thr + margin and not (rt == 0 and red > 0.15):
+                    lab = 1
+            # maillot rayé (probable arbitre) : aucune équipe tant que le coach ne l'a pas désigné
+            if lab in (0, 1) and (d["box"][3] - d["box"][1]) >= 40 and d["tid"] not in self.manual_side \
+                    and referee_score(frame, d["box"], d.get("kp")) > 0.2:
+                lab = UNK
+                self.striped[d["tid"]] = self.striped.get(d["tid"], 0) + 1
             if d["tid"] >= 0:
-                lab = self.clf.vote(d["tid"], lab)
-            # arbitres : maillot rayé (et brassard) repéré grâce au squelette ; 3 images
-            # « rayées » sur une même piste suffisent, l'arbitre reste arbitre ensuite
-            t = d["tid"]
-            if t >= 0 and t not in self.manual_side and (d["box"][3] - d["box"][1]) >= 40:
-                if referee_score(frame, d["box"], d.get("kp")) > 0.3:
-                    self.ref_hits[t] = self.ref_hits.get(t, 0) + 1
-            if self.ref_hits.get(t, 0) >= 3:
+                c = self.team_votes.setdefault(d["tid"], Counter())
+                if lab in (0, 1):
+                    c[lab] += 1
+                if c:
+                    (best, nb), tot = c.most_common(1)[0], sum(c.values())
+                    lab = best if (nb >= 3 and nb / tot >= 0.7) else UNK
+                    if self.striped.get(d["tid"], 0) >= 3 and self.striped[d["tid"]] >= 0.3 * tot:
+                        lab = UNK                             # souvent rayé : on ne l'attribue pas
+            # arbitres : seulement ceux désignés à la main par le coach (« ⚑ Arbitre »)
+            if self.ref_hits.get(d["tid"], 0) >= 100:
                 lab = REF
             d["cluster"] = lab
             self.last_cluster[d["tid"]] = lab
-            d["side"] = self.cluster_side.get(lab) if lab in (0, 1) else None
-            if d["tid"] in self.manual_side:
-                d["side"] = self.manual_side[d["tid"]]
         self._resolve_sides()
+        for d in dets:
+            lab = d["cluster"]
+            d["side"] = self.cluster_side.get(lab) if lab in (0, 1) else None
+            if d["tid"] in self.manual_side:              # choix du coach : prioritaire
+                d["side"] = self.manual_side[d["tid"]]
 
+        # --- mémoire du match : identités déjà connues pour cet instant (relecture)
+        self._restore_from_memory(dets, now)
         # --- numéros
         self._read_numbers(frame, dets, now)
         for d in dets:
@@ -685,6 +863,7 @@ class Engine:
                     if d["tid"] in self.votes.manual or (conf >= 0.85 and n >= 4 and avg >= 0.6):
                         self.validated[d["tid"]] = (d["side"], num)      # validé : plus de lecture
 
+        self._record_memory(dets, now)
         if self.a.collecte:
             self._collect(frame, dets, now)
 
@@ -698,6 +877,7 @@ class Engine:
             wp = cv2.perspectiveTransform(feet, H).reshape(-1, 2)
             for d, (x, y) in zip(dets, wp):
                 d["world"] = (float(x), float(y)) if self.rink.inside(x, y, 1.5) else None
+        self._detect_goalies(dets, now, game_t)
         self._persist_ids(dets, now)
         if self.mode == "players":            # joueur choisi reconnu à sa position : on le suit
             for d in dets:
@@ -874,6 +1054,121 @@ class Engine:
         self.validated = {t: k for t, k in self.validated.items() if t in seen_now or t in self.known}
         vis = {(d["side"], d["num"]) for d in dets if d["num"]}
         self.recent_lost = {m["key"] for m in self.known.values() if m["key"] not in vis}
+
+    def _detect_goalies(self, dets, now, game_t):
+        """Cages : sur la ligne de but, au centre. Un joueur qui reste dans les ~3 m devant une
+        cage plus de 2 s est le gardien de son équipe : il reçoit le numéro du gardien en jeu
+        (feuille FFHG). On en déduit aussi la cage défendue par chaque équipe."""
+        gx = self.rink.goal_x
+        for d in dets:
+            w = d.get("world")
+            t = d["tid"]
+            if w is None or t < 0 or d["side"] is None:
+                continue
+            near = None
+            for s in (-1, 1):
+                dx = (s * gx - w[0]) * s                     # > 0 : devant la cage, côté glace
+                if -0.8 < dx < 3.2 and abs(w[1]) < 2.2:
+                    near = s
+            g = self.goalie_track.setdefault(t, dict(n=0, side=None, t0=now))
+            if near is None:
+                g["n"] = max(0, g["n"] - 1)
+                continue
+            g["n"] += 1
+            if g["side"] != near:
+                g["side"], g["t0"] = near, now
+            if g["n"] >= 12 and now - g["t0"] > 2.0:          # ~2 s devant la même cage
+                self.defends[d["side"]] = near
+                d["goalie"] = True
+                if self.match and t not in self.votes.manual:
+                    num = self.match.goalie_at(self._side_key(d["side"]), game_t)
+                    if num and self.validated.get(t) != (d["side"], num):
+                        self.validated[t] = (d["side"], num)
+                        d["num"] = num
+                        for o, k in list(self.validated.items()):    # un seul gardien de ce numéro
+                            if o != t and k == (d["side"], num) and o not in self.votes.manual:
+                                self.validated.pop(o, None)
+                        if (d["side"], num) not in self.goalie_logged:
+                            self.goalie_logged.add((d["side"], num))
+                            self.log(f"[gardien] {self._name(d['side'])} #{num} "
+                                     f"{self._roster(d['side']).get(num, {}).get('short', '')} devant sa cage")
+        if self.defends.get("our") is not None:
+            # sens du jeu connu par la cage défendue : la jauge de pression n'a plus à le deviner
+            self.pressure.defend_votes[:] = 0
+            self.pressure.defend_votes[0 if self.defends["our"] < 0 else 1] = 50
+
+    def cages_px(self, H):
+        """Contour des deux cages à l'écran (pour l'overlay), si la patinoire est repérée."""
+        if H is None or self.cam is None:
+            return None
+        from autocalib import camera_from_params
+        K, R, C = camera_from_params(np.r_[self.cam.center, self.cam.q], self.size)
+        gx, hw, hh, dp = self.rink.goal_x, 0.915, 1.22, 1.12
+        out = []
+        W, Hh = self.size
+        for s in (-1, 1):
+            x = s * gx
+            pts = np.array([[x, -hw, 0], [x, -hw, hh], [x, hw, hh], [x, hw, 0],
+                            [x + s * dp, hw, 0], [x + s * dp, -hw, 0], [x, -hw, 0]], float)
+            Xc = (pts - C) @ R.T
+            if (Xc[:, 2] <= 0.5).any():
+                continue
+            uv = (Xc @ K.T)[:, :2] / Xc[:, 2:3]
+            if (uv[:, 0] < -0.2 * W).all() or (uv[:, 0] > 1.2 * W).all():
+                continue
+            out.append([[round(u / W, 4), round(v / Hh, 4)] for u, v in uv])
+        return out
+
+    def _smooth_pose(self, dets, now, a=0.55, hold=0.35):
+        """Lissage du squelette par joueur suivi : chaque point est moyenné avec sa position
+        précédente (exprimée par rapport aux pieds, pour ne pas freiner le déplacement), et un
+        point qui manque est gardé brièvement (hold s) au lieu de faire disparaître le membre."""
+        for d in dets:
+            kp, t = d.get("kp"), d["tid"]
+            if kp is None or t < 0:
+                continue
+            x1, y1, x2, y2 = d["box"]
+            ref = np.array([(x1 + x2) / 2, y2])
+            rel = kp[:, :2] - ref
+            prev = self.pose_smooth.get(t)
+            out = kp.copy()
+            if prev is not None:
+                prel, pconf, pt = prev
+                for i in range(len(kp)):
+                    if kp[i, 2] > 0.35 and pconf[i] > 0.35:
+                        rel[i] = a * rel[i] + (1 - a) * prel[i]
+                    elif kp[i, 2] <= 0.35 and pconf[i] > 0.35 and now - pt[i] < hold:
+                        rel[i] = prel[i]                  # point momentanément caché : on le garde
+                        out[i, 2] = pconf[i] * 0.9
+            out[:, :2] = rel + ref
+            seen = np.where(out[:, 2] > 0.35, now, prev[2] if prev is not None else now)
+            self.pose_smooth[t] = (rel.copy(), out[:, 2].copy(), seen)
+            d["kp"] = out
+        if len(self.pose_smooth) > 400:
+            live = {d["tid"] for d in dets}
+            self.pose_smooth = {k: v for k, v in self.pose_smooth.items() if k in live}
+
+    def _on_ice(self, frame, d):
+        """Pieds sur la glace ? Zone sous les pieds claire et peu colorée (filet gommé).
+        Une fois la patinoire repérée, on vérifie aussi la position réelle sur la piste."""
+        x1, y1, x2, y2 = d["box"]
+        w, h = x2 - x1, y2 - y1
+        H, W = frame.shape[:2]
+        if self.cam is not None and getattr(self, "_last_H", None) is not None:
+            p = cv2.perspectiveTransform(np.float32([[[(x1 + x2) / 2, y2]]]), self._last_H)[0, 0]
+            if not self.rink.inside(p[0], p[1], 1.0):
+                return False
+        if y2 >= H - 2:
+            return True                                   # pieds coupés par le bas de l'image
+        px1, px2 = int(max(0, x1 - 0.1 * w)), int(min(W, x2 + 0.1 * w))
+        py1, py2 = int(max(0, y2 - 0.04 * h)), int(min(H, y2 + 0.12 * h + 2))
+        patch = frame[py1:py2, px1:px2]
+        if patch.size == 0:
+            return True
+        patch = cv2.morphologyEx(patch, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        lab = cv2.cvtColor(patch, cv2.COLOR_BGR2LAB).astype(np.int16)
+        ice = (lab[..., 0] > 135) & (np.hypot(lab[..., 1] - 128, lab[..., 2] - 128) < 30)
+        return ice.mean() > 0.25
 
     def _crossing_guard(self, dets, now):
         """Quand deux joueurs (même équipe) se superposent, le suivi peut échanger leurs pistes.
@@ -1121,6 +1416,24 @@ class Engine:
             if d["side"] and d["side"] != self.focus:     # on ne lit que l'équipe analysée
                 continue
             cands.append((-h, d))
+        # modèle entraîné : reconnaissance du joueur entier (2 fois/s au plus par joueur)
+        if self.mode == "team" and self.recog:
+            batch = {}
+            for d in dets:
+                t, side = d["tid"], d["side"]
+                if t < 0 or side not in self.recog or t in self.validated or t in self.votes.manual:
+                    continue
+                if now < self.next_recog.get(t, 0) or (d["box"][3] - d["box"][1]) < 40:
+                    continue
+                x1, y1, x2, y2 = [int(v) for v in d["box"]]
+                crop = frame[max(0, y1):y2, max(0, x1):x2]
+                if crop.size:
+                    batch.setdefault(side, []).append((d, crop))
+                    self.next_recog[t] = now + 0.5
+            for side, items in batch.items():
+                for (d, _), (num, prob) in zip(items, self.recog[side].predict([c for _, c in items[:8]])):
+                    if prob >= 0.85 and num in self._roster(side):
+                        self.votes.add(d["tid"], [(num, min(prob, 0.95))], {num})
         if self.paused:
             # pause : chaque joueur non identifié est lu une fois, en plusieurs cadrages (dos décalé
             # à gauche/droite, plus haut, manches) ; 3 lectures concordantes suffisent à le valider
@@ -1170,13 +1483,7 @@ class Engine:
         cur = {s: self.shifts[s].current(game_t) for s in ("our", "them")}
         players = []
         for d in dets:
-            if d["cluster"] == REF:
-                if d.get("kp") is not None:
-                    x1, y1, x2, y2 = d["box"]
-                    players.append(dict(tid=int(d["tid"]), ref=True, side=None, num=None,
-                                        box=[round(x1 / W, 4), round(y1 / Hh, 4), round(x2 / W, 4), round(y2 / Hh, 4)],
-                                        kp=[[round(float(x) / W, 4), round(float(y) / Hh, 4)] if c > 0.35 else None
-                                            for x, y, c in d["kp"]]))
+            if d["cluster"] == REF:                     # arbitre désigné : exclu, rien n'est affiché
                 continue
             x1, y1, x2, y2 = d["box"]
             side, num = d["side"], d["num"]
@@ -1186,10 +1493,19 @@ class Engine:
                 continue
             k = d.get("kin")
             p = dict(tid=int(d["tid"]), box=[round(x1 / W, 4), round(y1 / Hh, 4), round(x2 / W, 4), round(y2 / Hh, 4)],
-                     side=side, num=num)
+                     side=side, num=num, goalie=bool(d.get("goalie")))
             kp = d.get("kp")
             if kp is not None:
                 p["kp"] = [[round(float(x) / W, 4), round(float(y) / Hh, 4)] if c > 0.35 else None for x, y, c in kp]
+            hist = self.track_hist.get(d["tid"])
+            if hist and len(hist) >= 3:                  # vitesse à l'écran (fraction d'image / s)
+                (t0, c0), (t1, c1) = hist[max(0, len(hist) - 4)], hist[-1]
+                if t1 - t0 > 0.05:
+                    v = (c1 - c0) / (t1 - t0)
+                    pv = self.vel_smooth.get(d["tid"])
+                    v = v if pv is None else 0.5 * v + 0.5 * pv          # vitesse lissée
+                    self.vel_smooth[d["tid"]] = v
+                    p["v"] = [round(float(v[0]) / W, 4), round(float(v[1]) / Hh, 4)]
             if num and side:
                 info = self._roster(side).get(num, {})
                 p["name"] = info.get("short", "")
@@ -1200,6 +1516,7 @@ class Engine:
                 p["dist"] = round(k.dist)
             players.append(p)
         msg = dict(type="state", mode=self.mode, focus=self.focus, fps=round(self.fps, 1), paused=self.paused,
+                   ts=round(self.cap_ts, 3), cages=self.cages_px(self._last_H),
                    status=dict(calib=self.calib_state if self.cam is None else ("ok" if calibrated else "perdu"),
                                match=(f"{self.match.short['home']} / {self.match.short['away']}" if self.match else None),
                                sides=len(self.cluster_side) == 2, colors=self.clf_ready,
@@ -1241,6 +1558,10 @@ class Engine:
         return msg
 
     def save(self, force=False):
+        try:
+            self.memory.save(force)
+        except Exception as ex:
+            self.log(f"[mémoire] écriture impossible : {ex}")
         players = {}
         for (side, num), k in self.kin.items():
             if not num:
@@ -1272,8 +1593,8 @@ def main():
                     help="maillot de ton équipe (défaut : sombre à domicile, clair à l'extérieur)")
     ap.add_argument("--weights", default="yolov8s-pose.pt",
                     help="détecteur (défaut : avec squelette ; yolov8s.pt = sans squelette)")
-    ap.add_argument("--imgsz", type=int, default=960)
-    ap.add_argument("--conf", type=float, default=0.3)
+    ap.add_argument("--imgsz", type=int, default=1280, help="taille d'analyse (plus grand = joueurs du fond mieux vus)")
+    ap.add_argument("--conf", type=float, default=0.22)
     ap.add_argument("--device", default=None)
     ap.add_argument("--fps", type=float, default=10, help="images analysées par seconde (mode équipe)")
     ap.add_argument("--fps-players", type=float, default=12, help="idem en mode joueurs choisis")

@@ -113,17 +113,25 @@ class Session:
                 mem = json.load(f)
         session = "annot_" + os.path.basename(self.folder)
         ts = round(time.time(), 1)
+        no_tc = n_extra = 0
         for fr in self.frames:
             if not fr.get("key"):
+                no_tc += 1
                 continue
             W, H = fr["size"]
             entries = [e for e in mem["frames"].get(fr["key"], []) if e[7] != session]
+            items = []
             for d in fr["dets"]:
                 r = res[fr["file"]].get(d["tid"])
-                if not r or r[0].get("ref") or not r[0].get("num"):
+                if r:
+                    items.append((d["box"], r[0]))
+            for ex in self.labels.get("extra", {}).get(fr["file"], []):
+                items.append((ex["box"], ex))
+                n_extra += 1 if ex.get("num") and not ex.get("ref") else 0
+            for box, lab in items:
+                if lab.get("ref") or lab.get("off") or not lab.get("num"):
                     continue
-                lab = r[0]
-                x1, y1, x2, y2 = d["box"]
+                x1, y1, x2, y2 = box
                 entries.append([lab["side"], lab["num"], round((x1 + x2) / 2 / W, 4), round(y2 / H, 4),
                                 round((y2 - y1) / H, 4), "main", ts, session, -1])
                 n_mem += 1
@@ -183,8 +191,10 @@ class Session:
                     for x1, y1, x2, y2 in boxes:
                         f.write(f"0 {(x1 + x2) / 2 / W:.6f} {(y1 + y2) / 2 / H:.6f} {(x2 - x1) / W:.6f} {(y2 - y1) / H:.6f}\n")
                 n_det += 1
-        msg = (f"Export : {n_mem} identités dans la mémoire du match, {n_num} vignettes de numéros, "
-               f"{n_team} vignettes d'équipe, {n_det} images de détection")
+        msg = (f"Export : {n_mem} identités dans la mémoire du match (dont {n_extra} cadres tracés à la main), "
+               f"{n_num} vignettes de numéros, {n_team} vignettes d'équipe, {n_det} images de détection")
+        if no_tc:
+            msg += f" - {no_tc} image(s) sans chrono lu : absentes de la mémoire"
         log(msg)
         return msg
 

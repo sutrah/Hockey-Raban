@@ -124,7 +124,20 @@ class GTDetector:
 
     def _get(self, idx):
         fr = self.frames[idx] if idx is not None and idx < len(self.frames) else {"players": []}
-        return [dict(tid=p["id"], box=np.array(p["box"], float), poly=None) for p in fr["players"]]
+        return [dict(tid=p["id"], box=np.array(p["box"], float), poly=None, kp=self._fake_kp(p["box"]))
+                for p in fr["players"]]
+
+    @staticmethod
+    def _fake_kp(b):
+        """Squelette approximatif (tests) déduit du rectangle : vu de dos."""
+        x1, y1, x2, y2 = b
+        w, h = x2 - x1, y2 - y1
+        P = lambda fx, fy: [x1 + fx * w, y1 + fy * h, 0.9]
+        kp = [P(.5, .08), [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], P(.25, .22), P(.75, .22), P(.15, .38), P(.85, .38),
+              P(.12, .52), P(.88, .52), P(.35, .55), P(.65, .55), P(.33, .75), P(.67, .75), P(.32, .97), P(.68, .97)]
+        kp = np.array(kp, float)
+        kp[0, 2] = 0.1                       # visage non visible : de dos
+        return kp
 
     def track(self, frame, idx=None):
         return self._get(idx)

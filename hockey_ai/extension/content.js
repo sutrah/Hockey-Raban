@@ -172,30 +172,59 @@
     return best;
   }
   cv.addEventListener("mousemove", (e) => { if (picking) { const p = playerAt(e); hover = p ? p.tid : null; } });
-  cv.addEventListener("click", (e) => {
-    if (!picking || !state) return;
+  // Identification : clic sur le squelette -> pause, choix du nom, reprise automatique
+  let resumeAfter = false, menuOpen = false;
+  function closeMenu() {
+    $("idmenu").classList.add("hide");
+    menuOpen = false;
+    picking = false; cv.classList.remove("pick"); $("idBtn").classList.remove("on");
+    if (resumeAfter && video) { const pr = video.play(); if (pr && pr.catch) pr.catch(() => {}); }
+    resumeAfter = false;
+  }
+  function openMenu(best, clientX) {
     const r = cv.getBoundingClientRect();
-    const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
-    let best = null, bd = 1e9;
-    for (const p of state.players) {
-      const [x1, y1, x2, y2] = p.box;
-      const d = Math.hypot((x1 + x2) / 2 - x, (y1 + y2) / 2 - y);
-      if (x > x1 - 0.02 && x < x2 + 0.02 && y > y1 - 0.03 && y < y2 + 0.02 && d < bd) { best = p; bd = d; }
-    }
-    if (!best) return;
+    if (video && !video.paused) { video.pause(); resumeAfter = true; }
     const m = $("idmenu");
     const list = (side) => (roster ? roster[side] : []).map((p) =>
-      `<label data-side="${side}" data-num="${p.num}"><b>${p.num}</b> ${p.name}</label>`).join("");
-    m.innerHTML = `<h4>${roster ? roster.names[focus] : ""} · qui est-ce ?</h4>${list(focus)}`;
-    m.style.left = Math.min(e.clientX - r.left, r.width - 200) + "px";
+      `<label data-side="${side}" data-num="${p.num}"><b>${p.num}</b> ${p.name}
+       <span style="color:${C.dim}">${p.pos || ""}</span></label>`).join("");
+    m.innerHTML = `<h4>${roster ? roster.names[focus] : ""} · qui est-ce ?${best.num ? ` (actuellement #${best.num})` : ""}</h4>
+      ${list(focus)}<label data-cancel="1" style="color:${C.dim}">✕ Annuler (Échap)</label>`;
+    m.style.left = Math.max(0, Math.min(clientX - r.left, r.width - 210)) + "px";
     m.style.top = "8px";
     m.classList.remove("hide");
-    m.querySelectorAll("label").forEach((l) => l.onclick = () => {
-      send({ type: "assign", tid: best.tid, side: l.dataset.side, num: l.dataset.num, box: best.box });
-      m.classList.add("hide");
-      picking = false; cv.classList.remove("pick"); $("idBtn").classList.remove("on");
+    menuOpen = true;
+    m.querySelectorAll("label").forEach((l) => l.onclick = (ev) => {
+      ev.stopPropagation();
+      if (!l.dataset.cancel) send({ type: "assign", tid: best.tid, side: l.dataset.side, num: l.dataset.num, box: best.box });
+      closeMenu();
     });
+  }
+  document.addEventListener("keydown", (e) => { if (menuOpen && e.key === "Escape") { e.preventDefault(); closeMenu(); } }, true);
+  cv.addEventListener("click", (e) => {
+    if (!picking || !state) return;
+    const best = playerAt(e);
+    if (best) openMenu(best, e.clientX);
   });
+  // clic direct sur un joueur de l'équipe analysée, même hors du mode « Identifier » : on
+  // intercepte le clic avant le lecteur vidéo (sinon il mettrait juste en pause / lecture)
+  function playerAtPoint(clientX, clientY) {
+    if (!state || !video || hidden) return null;
+    const r = video.getBoundingClientRect();
+    if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) return null;
+    const p = playerAt({ clientX, clientY });
+    return p && p.side === focus && p.kp ? p : null;
+  }
+  for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
+    window.addEventListener(type, (e) => {
+      if (picking || menuOpen || e.button !== 0) return;
+      if (e.composedPath && e.composedPath().includes(host)) return;     // clic dans nos panneaux
+      const p = playerAtPoint(e.clientX, e.clientY);
+      if (!p) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (type === "click") openMenu(p, e.clientX);
+    }, true);
+  }
 
   // ------------------------------------------------------------ panneau
   const fmt = (s) => s == null ? "–" : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;

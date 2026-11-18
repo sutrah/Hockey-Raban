@@ -10,31 +10,39 @@ import numpy as np
 MARKER_BGR = (255, 0, 255)      # magenta pur, affiché par l'extension aux 4 coins de la vidéo
 
 
-def _full_screen_grabber():
-    """Renvoie une fonction grab(region=None) -> image BGR, la plus rapide disponible."""
-    try:
-        import dxcam        # Windows : capture par la carte graphique (Desktop Duplication)
-        cam = dxcam.create(output_color="BGR")
+def _full_screen_grabber(use_dxcam=False):
+    """Renvoie une fonction grab(region=None) -> image BGR.
 
-        def grab(region=None):
-            f = cam.grab(region=region)
-            return None if f is None else np.ascontiguousarray(f)
-        grab.backend = "dxcam"
-        grab.cam = cam
-        return grab
-    except Exception:
-        pass
+    Par défaut : mss (capture GDI, simple et fiable, ~20 ms en 1080p). dxcam (capture par la
+    carte graphique) peut rester bloqué après un passage en plein écran : seulement sur demande.
+    Les coordonnées sont celles de l'écran virtuel (tous les moniteurs)."""
+    if use_dxcam:
+        try:
+            import dxcam
+            cam = dxcam.create(output_color="BGR")
+
+            def grab(region=None):
+                f = cam.grab(region=region)
+                return None if f is None else np.ascontiguousarray(f)
+            grab.backend = "dxcam"
+            grab.origin = (0, 0)
+            return grab
+        except Exception:
+            pass
     import mss
     sct = mss.mss()
+    virt = sct.monitors[0]              # tous les écrans réunis
 
     def grab(region=None):
         if region is None:
-            mon = sct.monitors[1]
-            region = (mon["left"], mon["top"], mon["left"] + mon["width"], mon["top"] + mon["height"])
-        l, t, r, b = region
-        img = np.asarray(sct.grab(dict(left=l, top=t, width=r - l, height=b - t)))
+            l, t = virt["left"], virt["top"]
+            r, b = l + virt["width"], t + virt["height"]
+        else:
+            l, t, r, b = region
+        img = np.asarray(sct.grab(dict(left=int(l), top=int(t), width=int(r - l), height=int(b - t))))
         return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
     grab.backend = "mss"
+    grab.origin = (virt["left"], virt["top"])
     return grab
 
 
@@ -60,8 +68,9 @@ def find_markers(img):
 class ScreenSource:
     """Capture de la zone de l'écran où s'affiche la vidéo."""
 
-    def __init__(self, region=None, log=print):
-        self.grab = _full_screen_grabber()
+    def __init__(self, region=None, log=print, use_dxcam=False):
+        self.use_dxcam = use_dxcam
+        self.grab = _full_screen_grabber(use_dxcam)
         self.region = region
         self.log = log
         self.idx = 0
@@ -71,16 +80,11 @@ class ScreenSource:
         log(f"[capture] écran via {self.grab.backend}")
 
     def reset(self):
-        """Recrée la capture (après un passage en plein écran, Windows peut la bloquer).
-        La dernière image est gardée : pendant une pause, l'analyse continue dessus."""
+        """Recrée la capture. La dernière image est gardée : pendant une pause, l'analyse continue dessus."""
         try:
-            cam = getattr(self.grab, "cam", None)
-            if cam is not None:
-                cam.release()
-                del cam
-        except Exception:
-            pass
-        self.grab = _full_screen_grabber()
+            self.grab = _full_screen_grabber(self.use_dxcam)
+        except Exception as e:
+            self.log(f"[capture] impossible de recréer la capture : {e}")
         self.none_streak = self.same_streak = 0
 
     def full(self):
@@ -94,6 +98,8 @@ class ScreenSource:
             if img is not None:
                 reg = find_markers(img)
                 if reg:
+                    ox, oy = getattr(self.grab, "origin", (0, 0))
+                    reg = (reg[0] + ox, reg[1] + oy, reg[2] + ox, reg[3] + oy)
                     self.region = reg
                     return reg
             time.sleep(wait)

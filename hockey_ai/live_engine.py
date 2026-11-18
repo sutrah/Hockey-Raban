@@ -690,7 +690,8 @@ class Engine:
                     best, bscore = m, score
             if best is not None:
                 side, num = best["key"]
-                self.votes.votes[d["tid"]][num] += 2.0       # repris : vaut 2 lectures sûres
+                self.votes.votes[d["tid"]][num] += 2.0       # repris : vaut des lectures sûres
+                self.votes.reads[d["tid"]][num] += 3
                 d["side"], d["num"] = side, num
                 visible.add(best["key"])
                 self.known = {t: m for t, m in self.known.items() if m is not best}
@@ -736,7 +737,7 @@ class Engine:
                 d = by_tid.get(tid)
                 for num, conf in sorted(reads, key=lambda r: -r[1]):
                     key = (side, num)
-                    if side and key in self.selected and key not in self.locked and conf > 0.45:
+                    if side and key in self.selected and key not in self.locked and conf > 0.6 and len(num) == 2:
                         self.locked[key] = dict(box=job["box"], t=now, vel=np.zeros(2))
                         if d is not None:
                             d["key"] = key

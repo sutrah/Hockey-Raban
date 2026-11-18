@@ -365,10 +365,10 @@ def estimate_camera_center(video_path, rink, frame_ids, static_mask=None, log=pr
             tot += fx
         return tot / len(top)
 
-    starts = [np.median([r[1][:3] for r in top], 0)] + [r[1][:3] for r in top[:2]]
+    starts = [np.median([r[1][:3] for r in top], 0), top[0][1][:3]]
     best = (1e9, None)
     for c0 in starts:
-        c, fx = _nm(joint, c0, SCALES[:3] * 0.5, 60)
+        c, fx = _nm(joint, c0, SCALES[:3] * 0.5, 45)
         if fx < best[0]:
             best = (fx, c)
     return best[1], best[0]

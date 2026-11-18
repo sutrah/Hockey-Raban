@@ -387,12 +387,18 @@
       // position prédite à l'instant de l'affichage : capture + vitesse x (maintenant - capture)
       const dt = Math.min(Math.max(nowS - S.ts, 0), 0.6);
       const vx = p.v ? p.v[0] : 0, vy = p.v ? p.v[1] : 0;
-      // cible = position prédite ; l'affichage la rejoint en douceur (pas de saut à chaque mise à jour)
+      // position prédite à maintenant (capture + vitesse x temps écoulé) : suit le joueur sans
+      // retard ; seul le petit saut à l'arrivée d'une nouvelle mesure est absorbé en ~0,1 s
       const tx = (p.box[0] + p.box[2]) / 2 + vx * dt, ty = p.box[3] + vy * dt;
-      const sm = smooth[k] || (smooth[k] = { x: tx, y: ty });
-      const kk = Math.min(1, frameDt * 14);
-      sm.x += (tx - sm.x) * kk; sm.y += (ty - sm.y) * kk;
-      if (Math.abs(tx - sm.x) > 0.08 || Math.abs(ty - sm.y) > 0.08) { sm.x = tx; sm.y = ty; }   // grand saut : on recale
+      let sm = smooth[k];
+      if (!sm) sm = smooth[k] = { x: tx, y: ty, ex: 0, ey: 0, ts: S.ts };
+      if (sm.ts !== S.ts) {                     // nouvelle mesure : on garde l'écart pour l'estomper
+        sm.ex = sm.x - tx; sm.ey = sm.y - ty; sm.ts = S.ts;
+        if (Math.abs(sm.ex) > 0.06 || Math.abs(sm.ey) > 0.06) { sm.ex = 0; sm.ey = 0; }   // trop loin : recalage net
+      }
+      const decay = Math.exp(-frameDt / 0.09);
+      sm.ex *= decay; sm.ey *= decay;
+      sm.x = tx + sm.ex; sm.y = ty + sm.ey;
       const ox = sm.x - (p.box[0] + p.box[2]) / 2, oy = sm.y - p.box[3];
       let [x1, y1, x2, y2] = p.box;
       x1 += ox; x2 += ox; y1 += oy; y2 += oy;

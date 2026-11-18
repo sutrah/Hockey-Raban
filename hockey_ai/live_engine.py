@@ -98,7 +98,7 @@ class Detector:
         return out
 
     def track(self, frame, idx=None):
-        r = self.track_model.track(frame, persist=True, tracker=os.path.join(HERE, "bytetrack_live.yaml"), imgsz=self.imgsz, **self.kw)[0]
+        r = self.track_model.track(frame, persist=True, tracker=os.path.join(HERE, "botsort_live.yaml"), imgsz=self.imgsz, **self.kw)[0]
         return self._parse(r, tracked=True)
 
     def detect(self, frame, rect=None, imgsz=None, idx=None):
@@ -1499,11 +1499,11 @@ class Engine:
                 p["kp"] = [[round(float(x) / W, 4), round(float(y) / Hh, 4)] if c > 0.35 else None for x, y, c in kp]
             hist = self.track_hist.get(d["tid"])
             if hist and len(hist) >= 3:                  # vitesse à l'écran (fraction d'image / s)
-                (t0, c0), (t1, c1) = hist[max(0, len(hist) - 4)], hist[-1]
+                (t0, c0), (t1, c1) = hist[max(0, len(hist) - 3)], hist[-1]
                 if t1 - t0 > 0.05:
                     v = (c1 - c0) / (t1 - t0)
                     pv = self.vel_smooth.get(d["tid"])
-                    v = v if pv is None else 0.5 * v + 0.5 * pv          # vitesse lissée
+                    v = v if pv is None else 0.65 * v + 0.35 * pv        # vitesse lissée (réactive)
                     self.vel_smooth[d["tid"]] = v
                     p["v"] = [round(float(v[0]) / W, 4), round(float(v[1]) / Hh, 4)]
             if num and side:
@@ -1596,7 +1596,7 @@ def main():
     ap.add_argument("--imgsz", type=int, default=1280, help="taille d'analyse (plus grand = joueurs du fond mieux vus)")
     ap.add_argument("--conf", type=float, default=0.22)
     ap.add_argument("--device", default=None)
-    ap.add_argument("--fps", type=float, default=10, help="images analysées par seconde (mode équipe)")
+    ap.add_argument("--fps", type=float, default=15, help="images analysées par seconde (mode équipe)")
     ap.add_argument("--fps-players", type=float, default=12, help="idem en mode joueurs choisis")
     ap.add_argument("--ocr-per-frame", type=int, default=2, help="dos lus par image au plus")
     ap.add_argument("--min-px", type=int, default=55, help="taille mini d'un joueur pour lire son numéro")

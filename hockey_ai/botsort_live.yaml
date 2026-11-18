@@ -1,0 +1,15 @@
+# Suivi des joueurs en direct : BoT-SORT avec compensation du mouvement de la caméra.
+# Le panoramique de la caméra est soustrait avant d'associer les joueurs d'une image à la
+# suivante : un patineur rapide filmé par une caméra qui pivote garde sa piste.
+tracker_type: botsort
+track_high_thresh: 0.25
+track_low_thresh: 0.1
+new_track_thresh: 0.3
+track_buffer: 90          # piste perdue gardée ~6 s à 15 im/s (joueur caché)
+match_thresh: 0.9         # tolérance d'association plus large (déplacements rapides)
+fuse_score: True
+gmc_method: sparseOptFlow # compensation du mouvement de la caméra
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+with_reid: False
+model: auto

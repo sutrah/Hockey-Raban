@@ -28,7 +28,7 @@ import numpy as np
 
 from autocalib import AutoCameraTracker, estimate_camera_center
 from live_capture import FileSource, ScreenSource, static_mask_from_frames
-from live_ocr import NumberVotes, Scoreboard, Worker, back_crop, pose_crops, read_number
+from live_ocr import NumberVotes, PlayerRecognizer, Scoreboard, Worker, back_crop, pose_crops, read_number
 from live_memory import MatchMemory, tc_key
 from live_state import Kin, Pressure, Recorder, Shifts
 from rink import PRESETS, Rink
@@ -312,6 +312,7 @@ class Engine:
         self.collect_next = {}
         self.track_hist = {}
         self.ref_hits = {}
+        self.next_recog = {}
         self.crossings = {}
         self.collect_count = {}
         self.still_since = None
@@ -336,6 +337,20 @@ class Engine:
             OCR.reader()
         except Exception as ex:
             self.log(f"[ocr] lecture de texte indisponible ({ex}) : numéros et bandeau désactivés")
+        # modèles de reconnaissance des joueurs entraînés sur les vignettes (train_numeros.py)
+        self.recog = {}
+        if self.match:
+            for side in ("our", "them"):
+                ab = self.match.abbr[self._side_key(side)]
+                path = os.path.join(HERE, "modeles", f"joueurs_{ab}.pt")
+                if os.path.exists(path):
+                    try:
+                        self.recog[side] = PlayerRecognizer(path)
+                        acc = self.recog[side].acc
+                        self.log(f"[modèle] reconnaissance des joueurs {ab} : {len(self.recog[side].classes)} joueurs"
+                                 + (f", justesse {100 * acc:.0f} % à l'entraînement" if acc is not None else ""))
+                    except Exception as ex:
+                        self.log(f"[modèle] {path} illisible : {ex}")
         try:
             dummy = np.zeros((360, 640, 3), np.uint8)
             self.det.detect(dummy)
@@ -1222,6 +1237,24 @@ class Engine:
             if d["side"] and d["side"] != self.focus:     # on ne lit que l'équipe analysée
                 continue
             cands.append((-h, d))
+        # modèle entraîné : reconnaissance du joueur entier (2 fois/s au plus par joueur)
+        if self.mode == "team" and self.recog:
+            batch = {}
+            for d in dets:
+                t, side = d["tid"], d["side"]
+                if t < 0 or side not in self.recog or t in self.validated or t in self.votes.manual:
+                    continue
+                if now < self.next_recog.get(t, 0) or (d["box"][3] - d["box"][1]) < 40:
+                    continue
+                x1, y1, x2, y2 = [int(v) for v in d["box"]]
+                crop = frame[max(0, y1):y2, max(0, x1):x2]
+                if crop.size:
+                    batch.setdefault(side, []).append((d, crop))
+                    self.next_recog[t] = now + 0.5
+            for side, items in batch.items():
+                for (d, _), (num, prob) in zip(items, self.recog[side].predict([c for _, c in items[:8]])):
+                    if prob >= 0.85 and num in self._roster(side):
+                        self.votes.add(d["tid"], [(num, min(prob, 0.95))], {num})
         if self.paused:
             # pause : chaque joueur non identifié est lu une fois, en plusieurs cadrages (dos décalé
             # à gauche/droite, plus haut, manches) ; 3 lectures concordantes suffisent à le valider

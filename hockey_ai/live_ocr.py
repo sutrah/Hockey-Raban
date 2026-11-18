@@ -351,3 +351,31 @@ class Worker(threading.Thread):
                 yield self.out.get_nowait()
             except queue.Empty:
                 return
+
+
+class PlayerRecognizer:
+    """Modèle entraîné par train_numeros.py (modeles/joueurs_<EQUIPE>.pt) : reconnaît un joueur
+    à son image entière. Renvoie (numéro, probabilité)."""
+
+    def __init__(self, path):
+        import torch
+        from train_numeros import build_model
+        d = torch.load(path, map_location="cpu", weights_only=False)
+        self.classes = d["classes"]
+        self.size = tuple(d.get("size", (96, 192)))
+        self.dev = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = build_model(len(self.classes), torch, pretrained=False)
+        self.model.load_state_dict(d["state"])
+        self.model.to(self.dev).eval()
+        self.torch = torch
+        self.acc = d.get("val_acc")
+
+    def predict(self, crops):
+        from train_numeros import to_tensor
+        if not crops:
+            return []
+        torch = self.torch
+        with torch.no_grad():
+            x = torch.stack([to_tensor(c, torch) for c in crops]).to(self.dev)
+            p = torch.softmax(self.model(x), 1).cpu().numpy()
+        return [(self.classes[int(i.argmax())], float(i.max())) for i in p]

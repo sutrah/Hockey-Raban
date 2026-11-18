@@ -5,3 +5,9 @@ scipy
 scikit-learn
 pillow
 lap
+
+# --- analyse en direct (live_engine.py)
+easyocr
+websockets>=12
+mss
+dxcam ; platform_system == "Windows"

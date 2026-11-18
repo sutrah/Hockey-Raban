@@ -3,3 +3,5 @@ __pycache__/
 .DS_Store
 *.autocalib.json
 *.pt
+hockey_ai/patinoires/
+hockey_ai/matchs/

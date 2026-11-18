@@ -77,11 +77,14 @@ class RinkModel:
                 red.append(poly)
             elif role in ("blue", "center_circle"):
                 blue.append(poly)
-        self.lines = {"red": red, "blue": blue}
-        self.samples = {k: self._sample(v, step) for k, v in self.lines.items()}
         o = rink.outline(24)
+        # "lum" : tous les marquages (lignes pâles repérées en luminosité, sans couleur fiable)
+        # "kick" : pied des bandes (plinthe jaune/colorée) = contour de la glace
+        self.lines = {"red": red, "blue": blue, "lum": red + blue, "kick": [np.vstack([o, o[:1]])]}
+        self.samples = {k: self._sample(v, step) for k, v in self.lines.items()}
         self.outline0 = np.c_[o, np.zeros(len(o))]
         self.outline1 = np.c_[o, np.full(len(o), BOARDS_H)]
+        self.weights = {"red": 1.0, "blue": 1.0, "lum": 1.0, "kick": 1.0}
 
     @staticmethod
     def _sample(polys, step):
@@ -105,7 +108,10 @@ class FrameFeatures:
         self.s = s
         self.size = (work_w, int(round(h0 * s)))
         w, h = self.size
-        small = cv2.resize(frame, self.size, interpolation=cv2.INTER_AREA)
+        big = cv2.resize(frame, (2 * w, 2 * h), interpolation=cv2.INTER_AREA)
+        # filet de protection devant la caméra : mailles fines et sombres -> effacées
+        big_nonet = cv2.morphologyEx(big, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        small = cv2.resize(big_nonet, self.size, interpolation=cv2.INTER_AREA)
         lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB).astype(np.int16)
         L, a, b = lab[..., 0], lab[..., 1] - 128, lab[..., 2] - 128
 
@@ -143,7 +149,6 @@ class FrameFeatures:
 
         self.tau = max(3.0, 0.012 * w)
         # couleurs détectées en double résolution (lignes fines), puis ramenées par « max »
-        big = cv2.resize(frame, (2 * w, 2 * h), interpolation=cv2.INTER_AREA)
         lab2 = cv2.cvtColor(big, cv2.COLOR_BGR2LAB).astype(np.int16)
         L2, a2, b2 = lab2[..., 0], lab2[..., 1] - 128, lab2[..., 2] - 128
         # écart à la teinte locale de la glace : les lignes fines/lointaines sont pâles
@@ -155,7 +160,20 @@ class FrameFeatures:
         pool = lambda m: cv2.resize(m * 255, self.size, interpolation=cv2.INTER_AREA) > 0
         base = near_ice & self.valid
         red, blue = pool(red2) & base, pool(blue2) & base
-        self.maps = {"red": self._linelike(red), "blue": self._linelike(blue)}
+        # lignes en luminosité : bandes sombres plus larges que les mailles du filet
+        g = cv2.GaussianBlur(cv2.cvtColor(big_nonet, cv2.COLOR_BGR2GRAY), (0, 0), 1.2)
+        kk = max(9, int(2 * w / 40)) | 1
+        bh = cv2.morphologyEx(g, cv2.MORPH_BLACKHAT, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kk, kk)))
+        bh = cv2.resize(bh, self.size, interpolation=cv2.INTER_AREA).astype(np.int16)
+        inner = cv2.erode(ice, np.ones((k, k), np.uint8)) > 0
+        lum = np.zeros((h, w), bool)
+        if inner.sum() > 100:
+            thr = max(6, np.percentile(bh[inner], 92))
+            lum = (bh > thr) & inner & self.valid
+        # plinthe jaune au pied des bandes
+        kick = (b > 30) & (L > 90) & self.valid
+        self.maps = {"red": self._linelike(red), "blue": self._linelike(blue),
+                     "lum": self._linelike(lum), "kick": self._linelike(kick, elong_min=6, big_min=0.25)}
         self.dt = {}
         self.npx = {}
         for c, m in self.maps.items():
@@ -163,7 +181,7 @@ class FrameFeatures:
             self.dt[c] = cv2.distanceTransform(np.where(m, 0, 255).astype(np.uint8), cv2.DIST_L2, 3)
         self.ice_area = max(1, int(self.ice.sum()))
 
-    def _linelike(self, m):
+    def _linelike(self, m, elong_min=3.5, big_min=0.035):
         """Garde les tracés fins et longs (lignes, cercles), pas les maillots ni les logos."""
         m0 = m
         m = cv2.dilate(m.astype(np.uint8), np.ones((5, 5), np.uint8))   # relie les pointillés
@@ -173,13 +191,13 @@ class FrameFeatures:
         for i in range(1, n):
             x, y, ww, hh, area = st[i]
             big = max(ww, hh)
-            if big < 0.035 * w or area < 6:
+            if big < big_min * w or area < 6:
                 continue
             fill = area / float(ww * hh)
             pts = np.column_stack(np.nonzero(lbl[y:y + hh, x:x + ww] == i)).astype(np.float32)
             (_, _), (rw, rh), _ = cv2.minAreaRect(pts)
             elong = max(rw, rh) / max(1.0, min(rw, rh))
-            if elong > 3.5 or (fill < 0.3 and big > 0.06 * w):
+            if elong > elong_min or (elong_min < 5 and fill < 0.3 and big > 0.06 * w):
                 keep[i] = True
         return keep[lbl] & m0
 
@@ -219,41 +237,49 @@ class Scorer:
         if R[2, 2] > -0.02:          # la caméra doit regarder vers le bas
             return 10.0
         f = self.f
-        # 1) recouvrement glace + bandes
+        # 1) recouvrement de la glace (avec ou sans bandes blanches : on garde le meilleur)
         self.buf[:] = 0
         self._fill(K, R, C, self.m.outline0)
+        ice_only = (self.buf > 0) & f.valid
         self._fill(K, R, C, self.m.outline1)
-        model = (self.buf > 0) & f.valid
-        inter = np.logical_and(model, f.ice).sum()
-        union = np.logical_or(model, f.ice).sum()
-        iou = inter / max(union, 1)
-        cost = 1.5 * (1 - iou)
-        # 2) lignes : modèle -> image et image -> modèle
+        with_boards = (self.buf > 0) & f.valid
+        iou = 0.0
+        for model in (ice_only, with_boards):
+            inter = np.logical_and(model, f.ice).sum()
+            union = np.logical_or(model, f.ice).sum()
+            iou = max(iou, inter / max(union, 1))
+        cost, wsum = 1.5 * (1 - iou), 1.5
+        # 2) marquages : modèle -> image et image -> modèle
         parts = {}
-        for c in ("red", "blue"):
+        for c in ("red", "blue", "lum", "kick"):
+            if f.npx[c] <= 20:
+                continue
             uv, ok = self._project(K, R, C, self.m.samples[c])
             ins = ok & (uv[:, 0] >= 0) & (uv[:, 0] < w - 1) & (uv[:, 1] >= 0) & (uv[:, 1] < h - 1)
-            fwd, rev = 1.0, 1.0
+            fwd = 1.0
             if ins.sum() >= 5:
                 q = np.int32(uv[ins])
-                vis = f.valid[q[:, 1], q[:, 0]] & f.ice[q[:, 1], q[:, 0]]
+                vis = f.valid[q[:, 1], q[:, 0]]
+                if c != "kick":
+                    vis &= f.ice[q[:, 1], q[:, 0]]
                 if vis.sum() >= 5:
                     d = f.dt[c][q[vis, 1], q[vis, 0]]
                     fwd = float(np.mean(np.minimum(d, f.tau)) / f.tau)
-            if f.npx[c] > 20:
-                self.buf[:] = 0
-                for poly in self.m.lines[c]:
-                    X = np.c_[poly, np.zeros(len(poly))]
-                    uvp, okp = self._project(K, R, C, X)
-                    if okp.all():
-                        uvp = np.clip(uvp, -4 * w, 5 * w)
-                        cv2.polylines(self.buf, [np.int32(np.round(uvp))], False, 255,
-                                      int(2 * f.tau) | 1)
-                rev = 1.0 - float(np.logical_and(self.buf > 0, f.maps[c]).sum()) / f.npx[c]
-                cost += 1.0 * fwd + 0.7 * rev
-            else:
-                cost += 0.5 * fwd + 0.35
+            self.buf[:] = 0
+            for poly in self.m.lines[c]:
+                X = np.c_[poly, np.zeros(len(poly))]
+                uvp, okp = self._project(K, R, C, X)
+                if okp.all():
+                    uvp = np.clip(uvp, -4 * w, 5 * w)
+                    cv2.polylines(self.buf, [np.int32(np.round(uvp))], False, 255, int(2 * f.tau) | 1)
+            rev = 1.0 - float(np.logical_and(self.buf > 0, f.maps[c]).sum()) / f.npx[c]
+            wc = self.m.weights[c]
+            if c == "lum" and f.npx["red"] + f.npx["blue"] > 0.004 * w * h:
+                wc *= 0.4          # couleurs bien visibles : la luminosité n'est qu'un appoint
+            cost += wc * (fwd + 0.7 * rev)
+            wsum += wc * 1.7
             parts[c] = (fwd, rev)
+        cost /= wsum
         if detail:
             return cost, dict(iou=iou, **{f"{c}_fwd": v[0] for c, v in parts.items()},
                               **{f"{c}_rev": v[1] for c, v in parts.items()})
@@ -301,40 +327,59 @@ def global_search(rink, scorer, rng, center=None, n_random=1500, n_refine=10):
     return best
 
 
-def estimate_camera_center(video_path, rink, frame_ids, static_mask=None, log=print, seed=0):
-    """Estime la position de la caméra sur quelques images (médiane des meilleures)."""
+def estimate_camera_center(video_path, rink, frame_ids, static_mask=None, log=print, seed=0, frames=None):
+    """Estime la position de la caméra : recherche complète sur chaque image, puis
+    ajustement commun (une seule position, panoramique/zoom propres à chaque image)."""
     model = RinkModel(rink)
     rng = np.random.default_rng(seed)
-    cap = cv2.VideoCapture(video_path)
+    if frames is None:
+        frames = []
+        cap = cv2.VideoCapture(video_path)
+        for fi in frame_ids:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(fi))
+            ok, frame = cap.read()
+            if ok:
+                frames.append((fi, frame))
+        cap.release()
     res = []
-    for fi in frame_ids:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(fi))
-        ok, frame = cap.read()
-        if not ok:
-            continue
+    for fi, frame in frames:
         feats = FrameFeatures(frame, static_mask=static_mask)
         if not feats.usable:
             continue
         sc = Scorer(model, feats)
         cost, p = global_search(rink, sc, rng)
         if p is not None:
-            res.append((cost, p, fi))
+            res.append((cost, p, sc))
             log(f"  image {fi} : score {cost:.2f} · caméra ≈ ({p[0]:.1f}, {p[1]:.1f}, {p[2]:.1f}) m")
-    cap.release()
     if not res:
         return None, None
     res.sort(key=lambda t: t[0])
-    good = [r for r in res if r[0] <= res[0][0] * 1.25 + 0.1][:max(3, len(res) // 2)]
-    center = np.median([r[1][:3] for r in good], 0)
-    return center, res[0][0]
+    top = res[:4]
+    qs = [r[1][3:].copy() for r in top]
+
+    def joint(c):
+        tot = 0.0
+        for k, (_, _, sc) in enumerate(top):
+            q, fx = _nm(lambda qq: sc(np.r_[c, qq]), qs[k], np.array([0.8, 0.6, 1.5]), 40)
+            qs[k] = q
+            tot += fx
+        return tot / len(top)
+
+    starts = [np.median([r[1][:3] for r in top], 0)] + [r[1][:3] for r in top[:2]]
+    best = (1e9, None)
+    for c0 in starts:
+        c, fx = _nm(joint, c0, SCALES[:3] * 0.5, 60)
+        if fx < best[0]:
+            best = (fx, c)
+    return best[1], best[0]
 
 
 # ---------------------------------------------------------------- suivi
 class AutoCameraTracker:
     """Même rôle que CameraTracker, sans calibration manuelle."""
 
-    def __init__(self, rink, frame_size, center, static_mask=None, refine_every=4,
-                 cut_threshold=0.55, accept=1.9, log=print, seed=0):
+    def __init__(self, rink, frame_size, center, static_mask=None, refine_every=5,
+                 cut_threshold=0.55, accept=0.45, log=print, seed=0, background=False):
         self.rink = rink
         self.model = RinkModel(rink)
         self.size = tuple(frame_size)
@@ -358,6 +403,12 @@ class AutoCameraTracker:
         else:
             self.static_small = None
         self.stats = dict(frames=0, located=0, searches=0)
+        # background=True (direct) : la recherche complète tourne dans un fil à part pour ne
+        # jamais figer l'analyse ; le résultat est repris, puis recalé, sur l'image suivante.
+        self.background = background
+        self.job = None
+        self.job_result = None
+        self.acc = None
 
     # -------------------------------------------------------------- outils
     def _p(self, q):
@@ -370,7 +421,7 @@ class AutoCameraTracker:
         feats = FrameFeatures(frame, boxes, self.static)
         return Scorer(self.model, feats), feats
 
-    def _refine(self, sc, q, iters=80):
+    def _refine(self, sc, q, iters=80):  # noqa: D401
         fun = lambda qq: sc(self._p(qq))
         return _nm(fun, q, np.array([1.0, 0.8, 1.5]), iters)
 
@@ -433,35 +484,92 @@ class AutoCameraTracker:
         cut = self.prev_hist is not None and \
             cv2.compareHist(self.prev_hist, hist, cv2.HISTCMP_CORREL) < self.cut_threshold
 
+        import time as _t
+        now = _t.time()
+        gap = now - getattr(self, "last_t", now)
+        self.last_t = now
         if self.q is not None and not cut:
             M = self._flow(gray, mask)
             if M is not None:
                 self.q = self._fit_to_H(self.H_of(self.q) @ M, self.q)
             self.since += 1
-            if self.since >= self.refine_every or M is None:
+            # l'analyse a pris du retard (bien plus que d'habitude) : la caméra a pu beaucoup bouger
+            avg = getattr(self, "gap_avg", gap)
+            big_gap = gap > max(0.5, 3.0 * avg)
+            self.gap_avg = 0.9 * avg + 0.1 * min(gap, 1.0)
+            if self.since >= self.refine_every or M is None or big_gap:
                 self.since = 0
                 sc, _ = self._scorer(frame, boxes)
-                q, cost = self._refine(sc, self.q)
+                q, cost = self._refine(sc, self.q, 90 if big_gap else 40)
+                if big_gap and cost > self.accept:      # second essai en partant plus large
+                    q2, c2 = _nm(lambda qq: sc(self._p(qq)), self.q, np.array([3.0, 1.5, 6.0]), 90)
+                    if c2 < cost:
+                        q, cost = q2, c2
+                if getattr(self, "debug", False):
+                    self.log(f"[cam] recalage {sc(self._p(self.q)):.2f} -> {cost:.2f} · déplacement {np.round(q - self.q, 2)}")
                 if cost <= self.accept:
                     self.q = self.q + 0.6 * (q - self.q)    # recalage doux (pas de saccade)
                     self.bad = 0
                 else:
                     self.bad += 1
+                    if getattr(self, "debug", False):
+                        self.log(f"[cam] recalage refusé ({cost:.2f}), {self.bad}/3")
                     if self.bad >= 3:
                         self.q = None
                         self.retry_in = 0
         else:
             if cut:
+                if getattr(self, "debug", False) and self.q is not None:
+                    self.log("[cam] coupure de plan détectée")
                 self.q = None
                 self.retry_in = 0
-            if self.retry_in <= 0:
+            if self.background and self.job is not None and self.acc is not None:
+                M = self._flow(gray, mask)                   # mouvement de caméra pendant la recherche
+                self.acc = self.acc @ M if M is not None else None
+            if self.background and self.job_result is not None:
+                q, cost = self.job_result
+                if getattr(self, "debug", False):
+                    self.log(f"[cam] résultat recherche {cost:.2f} (acc {'ok' if self.acc is not None else 'perdu'})")
+                self.job_result = None
+                self.job = None
+                if q is not None and cost <= self.accept:
+                    if self.acc is not None:                 # rattrape le mouvement depuis l'image cherchée
+                        q = self._fit_to_H(self.H_of(q) @ self.acc, q)
+                    sc, _ = self._scorer(frame, boxes)       # recale sur l'image actuelle
+                    q2, c2 = self._refine(sc, q, 60)
+                    if getattr(self, "debug", False):
+                        self.log(f"[cam] recherche : score {cost:.2f} -> recalé {c2:.2f}")
+                    if c2 <= self.accept:
+                        self.q, self.bad, self.since = q2, 0, 0
+                if self.q is None:
+                    self.retry_in = 10
+            elif self.background and self.job is not None and self.job.is_alive():
+                pass                                    # recherche en cours
+            elif self.retry_in <= 0:
                 sc, feats = self._scorer(frame, boxes)
                 if feats.usable:
-                    q, cost = self._search(sc)
-                    if q is not None and cost <= self.accept:
-                        self.q, self.bad, self.since = q, 0, 0
-                if self.q is None:
+                    if self.background:
+                        import threading
+
+                        def work(frame=frame.copy(), boxes=list(boxes)):
+                            # recherche grossière en basse résolution (4x plus rapide), puis affinée
+                            coarse = Scorer(self.model, FrameFeatures(frame, boxes, self.static, work_w=240))
+                            q, cost = self._search(coarse)
+                            if q is not None:
+                                fine, _ = self._scorer(frame, boxes)
+                                q, cost = self._refine(fine, q, 80)
+                            self.job_result = (q, cost)
+                        self.job = threading.Thread(target=work, daemon=True)
+                        self.acc = np.eye(3)
+                        self.job.start()
+                    else:
+                        q, cost = self._search(sc)
+                        if q is not None and cost <= self.accept:
+                            self.q, self.bad, self.since = q, 0, 0
+                if self.q is None and not self.background:
                     self.retry_in = 10          # pas une vue de la glace : réessaie plus tard
+                elif not feats.usable:
+                    self.retry_in = 10
             else:
                 self.retry_in -= 1
 

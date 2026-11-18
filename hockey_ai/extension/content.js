@@ -29,7 +29,9 @@
   }
 
   // --------------------------------------------------------------- état
-  let lastSig = "", sigT = 0, relocated = true;
+  let lastSig = "", sigT = 0, relocated = true, hover = null;
+  // os du squelette (points COCO : 5/6 épaules, 7/8 coudes, 9/10 poignets, 11/12 hanches, 13/14 genoux, 15/16 chevilles)
+  const BONES = [[5, 6], [5, 7], [7, 9], [6, 8], [8, 10], [5, 11], [6, 12], [11, 12], [11, 13], [13, 15], [12, 14], [14, 16]];
   let video = null, state = null, roster = null, prevBoxes = {}, lastStateT = 0;
   let mode = "team", focus = "our", selected = [], hidden = false, picking = false, markersOn = false;
 
@@ -158,6 +160,18 @@
   }
 
   // identification par clic : on clique un joueur, on choisit son nom
+  function playerAt(e) {
+    const r = cv.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+    let best = null, bd = 1e9;
+    for (const p of (state ? state.players : [])) {
+      const [x1, y1, x2, y2] = p.box;
+      const d = Math.hypot((x1 + x2) / 2 - x, (y1 + y2) / 2 - y);
+      if (x > x1 - 0.02 && x < x2 + 0.02 && y > y1 - 0.03 && y < y2 + 0.02 && d < bd) { best = p; bd = d; }
+    }
+    return best;
+  }
+  cv.addEventListener("mousemove", (e) => { if (picking) { const p = playerAt(e); hover = p ? p.tid : null; } });
   cv.addEventListener("click", (e) => {
     if (!picking || !state) return;
     const r = cv.getBoundingClientRect();
@@ -319,6 +333,23 @@
       }
       const cx = (x1 + x2) / 2 * W, top = y1 * H;
       const col = p.side ? C[p.side] : "rgba(255,255,255,.6)";
+      // squelette : épaisseur plus forte en mode identification et pour le joueur survolé
+      if (p.kp && (p.side === focus || picking)) {
+        const dx = (x1 - p.box[0]) * W, dy = (y1 - p.box[1]) * H;
+        const hot = picking && hover === p.tid;
+        ctx.strokeStyle = col; ctx.globalAlpha = p.side === focus ? (hot ? 1 : 0.75) : 0.35;
+        ctx.lineWidth = hot ? 4 : (picking ? 2.5 : 1.6); ctx.lineCap = "round";
+        ctx.beginPath();
+        for (const [a, b] of BONES) {
+          const A = p.kp[a], B = p.kp[b];
+          if (!A || !B) continue;
+          ctx.moveTo(A[0] * W + dx, A[1] * H + dy); ctx.lineTo(B[0] * W + dx, B[1] * H + dy);
+        }
+        ctx.stroke();
+        const nose = p.kp[0] || p.kp[1] || p.kp[2];
+        if (nose) { ctx.beginPath(); ctx.arc(nose[0] * W + dx, nose[1] * H + dy, hot ? 5 : 3.5, 0, 7); ctx.stroke(); }
+        ctx.globalAlpha = 1;
+      }
       if (!p.num) {                    // pas encore identifié : simple point de couleur d'équipe
         if (p.side && state.mode === "team") { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(cx, top - 6, 3.5, 0, 7); ctx.fill(); }
         continue;

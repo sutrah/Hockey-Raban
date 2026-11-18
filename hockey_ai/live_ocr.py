@@ -178,6 +178,62 @@ def back_crop(frame, box, sleeves=False):
     return crop
 
 
+def _prep(crop):
+    if crop is None or crop.size == 0 or crop.shape[0] < 8 or crop.shape[1] < 6:
+        return None
+    s = 96.0 / crop.shape[0]
+    crop = cv2.resize(crop, None, fx=s, fy=s, interpolation=cv2.INTER_CUBIC)
+    return cv2.morphologyEx(crop, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))   # efface le filet
+
+
+def pose_crops(frame, kp, min_conf=0.4):
+    """D'après le squelette (17 points COCO) : orientation du joueur et cadrages du numéro.
+
+    -> (orientation, [vignettes]) ; orientation : "dos" (visage invisible, épaule gauche du
+    joueur à gauche de l'image), "face", "profil" ou "?" ; vignettes : dos entre les épaules
+    et les hanches, et manches entre épaule et coude."""
+    if kp is None:
+        return "?", []
+    c = kp[:, 2]
+    ls, rs, lh, rh = kp[5], kp[6], kp[11], kp[12]
+    if c[5] < min_conf or c[6] < min_conf:
+        return "?", []
+    face_vis = max(c[0], c[1], c[2])
+    sw = abs(rs[0] - ls[0])
+    if face_vis < 0.35 and ls[0] < rs[0] - 2:
+        orient = "dos"
+    elif face_vis > 0.6 and ls[0] > rs[0] + 2:
+        orient = "face"
+    else:
+        orient = "profil"
+    H, W = frame.shape[:2]
+    crops = []
+    top = min(ls[1], rs[1])
+    if c[11] > min_conf and c[12] > min_conf:
+        bottom = top + 0.75 * (((lh[1] + rh[1]) / 2) - top)
+    else:
+        bottom = top + 1.1 * max(sw, 8)
+    if orient in ("dos", "profil") and sw > 6:
+        # numéro souvent plus large que l'écart des épaules quand le joueur est de biais
+        x1, x2 = min(ls[0], rs[0]) - 0.3 * sw, max(ls[0], rs[0]) + 0.3 * sw
+        y1, y2 = top - 0.05 * (bottom - top), bottom
+        x1, y1, x2, y2 = int(max(0, x1)), int(max(0, y1)), int(min(W, x2)), int(min(H, y2))
+        if x2 - x1 > 6 and y2 - y1 > 8:
+            crops.append(_prep(frame[y1:y2, x1:x2]))
+    for s, el in ((5, 7), (6, 8)):              # manches : de l'épaule au coude
+        if c[s] > min_conf and c[el] > min_conf:
+            a, b = kp[s], kp[el]
+            L = np.hypot(*(b[:2] - a[:2]))
+            if L < 10:
+                continue
+            x1, x2 = min(a[0], b[0]) - 0.35 * L, max(a[0], b[0]) + 0.35 * L
+            y1, y2 = min(a[1], b[1]) - 0.1 * L, max(a[1], b[1]) + 0.1 * L
+            x1, y1, x2, y2 = int(max(0, x1)), int(max(0, y1)), int(min(W, x2)), int(min(H, y2))
+            if x2 - x1 > 6 and y2 - y1 > 8:
+                crops.append(_prep(frame[y1:y2, x1:x2]))
+    return orient, [cr for cr in crops if cr is not None]
+
+
 def read_number(crop):
     """-> [(numéro, confiance)] (1 ou 2 chiffres). Reconnaissance directe sur la zone du dos
     (la détection de texte d'EasyOCR échoue sur des chiffres petits et flous)."""

@@ -219,7 +219,7 @@ class Engine:
         if args.source:
             self.src = FileSource(args.source, speed=args.speed, start=args.start, loop=args.loop)
         else:
-            self.src = ScreenSource()
+            self.src = ScreenSource(use_dxcam=args.dxcam)
         # feuille de match
         self.feed = None
         self.match = None
@@ -277,6 +277,8 @@ class Engine:
         self.next_verify = {}
         self.contra = {}
         self.prev_small = None
+        self.collect_next = {}
+        self.collect_count = {}
         self.still_since = None
         self.paused = False
         self.pause_done = set()
@@ -333,11 +335,19 @@ class Engine:
     def _calibrate_async(self):
         """Position de la caméra : profil de la patinoire si connu, sinon estimation (1 à 2 min)."""
         path = self._profile_path()
+        known = next((pr for k, pr in KNOWN_RINKS.items() if k in slug(path)), None)
+        p = None
         if os.path.exists(path) and not self.a.recalib:
             with open(path) as f:
                 p = json.load(f)
+            if known and p.get("rink") != known and not self.a.rink:
+                self.log(f"[calib] ancien profil en {p.get('rink')} alors que la patinoire est en {known} : "
+                         "nouvelle calibration")
+                p = None
+        if p is not None:
             self.rink = Rink(self.a.rink or p["rink"])
             self.pressure.rink = self.rink
+            self.calib_score = p.get("score")
             self._start_tracker(np.array(p["camera"]))
             self.log(f"[calib] profil {os.path.basename(path)} : patinoire {self.rink.L:.0f}×{self.rink.W:.0f} m")
             return
@@ -373,6 +383,7 @@ class Engine:
                 return
             self.rink = Rink(best[2])
             self.pressure.rink = self.rink
+            self.calib_score = float(best[0])
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
                 json.dump(dict(rink=best[2], camera=[float(v) for v in best[1]], score=float(best[0]),
@@ -384,8 +395,12 @@ class Engine:
         threading.Thread(target=work, daemon=True).start()
 
     def _start_tracker(self, center):
+        # seuil d'acceptation calé sur la qualité obtenue à la calibration de CETTE patinoire
+        # (vraie vidéo compressée, filet : scores plus élevés que sur une image idéale)
+        sc = getattr(self, "calib_score", None)
+        accept = float(np.clip(1.3 * sc, 0.45, 0.7)) if sc else 0.55
         self.cam = AutoCameraTracker(self.rink, self.size, center, static_mask=self._mask(), log=self.log,
-                                     background=True)
+                                     background=True, accept=accept)
         self.cam.debug = bool(os.environ.get("HOCKEY_DEBUG"))
         self.calib_state = "ok"
 
@@ -608,6 +623,9 @@ class Engine:
                     if d["tid"] in self.votes.manual or (conf >= 0.85 and n >= 4 and avg >= 0.6):
                         self.validated[d["tid"]] = (d["side"], num)      # validé : plus de lecture
 
+        if self.a.collecte:
+            self._collect(frame, dets, now)
+
         # croisement de deux joueurs de la même équipe : le suivi peut échanger leurs identités
         for i, a in enumerate(dets):
             for b in dets[i + 1:]:
@@ -797,6 +815,34 @@ class Engine:
         self.validated = {t: k for t, k in self.validated.items() if t in seen_now or t in self.known}
         vis = {(d["side"], d["num"]) for d in dets if d["num"]}
         self.recent_lost = {m["key"] for m in self.known.values() if m["key"] not in vis}
+
+    def _collect(self, frame, dets, now):
+        """Vignettes du dos (pas de vidéo) des joueurs nommés par un clic du coach : étiquettes
+        sûres pour entraîner plus tard un lecteur de numéros spécialisé. 1 vignette/s par
+        joueur, 40 au plus par joueur et par match, joueurs isolés seulement."""
+        root = os.path.join(HERE, "dataset_numeros")
+        for d in dets:
+            tid = d["tid"]
+            if tid not in self.votes.manual or now < self.collect_next.get(tid, 0):
+                continue
+            side = self.manual_side.get(tid, d["side"])
+            num = self.votes.manual[tid]
+            key = (side, num)
+            if self.collect_count.get(key, 0) >= 40 or (d["box"][3] - d["box"][1]) < self.a.min_px:
+                continue
+            if any(o is not d and _iou(o["box"], d["box"]) > 0.1 for o in dets):
+                continue                         # un autre joueur devant : vignette ambiguë
+            x1, y1, x2, y2 = [int(v) for v in d["box"]]
+            crop = frame[max(0, y1):y2, max(0, x1):x2]
+            if crop.size == 0:
+                continue
+            folder = os.path.join(root, f"{self._name(side)}_{num}")
+            os.makedirs(folder, exist_ok=True)
+            n = self.collect_count.get(key, 0)
+            cv2.imwrite(os.path.join(folder, f"{dt.date.today().isoformat()}_{tid}_{n:02d}.jpg"), crop,
+                        [cv2.IMWRITE_JPEG_QUALITY, 92])
+            self.collect_count[key] = n + 1
+            self.collect_next[tid] = now + 1.0
 
     def _resolve_sides(self):
         """Quelle couleur de maillot = quelle équipe.
@@ -1045,6 +1091,11 @@ def main():
     ap.add_argument("--ocr-per-frame", type=int, default=2, help="dos lus par image au plus")
     ap.add_argument("--min-px", type=int, default=55, help="taille mini d'un joueur pour lire son numéro")
     ap.add_argument("--port", type=int, default=PORT)
+    ap.add_argument("--dxcam", action="store_true",
+                    help="capture par la carte graphique (plus rapide, mais peut se bloquer)")
+    ap.add_argument("--collecte", action="store_true",
+                    help="garde des vignettes du dos des joueurs identifiés par clic (pour entraîner "
+                         "un lecteur de numéros) dans dataset_numeros/")
     ap.add_argument("--apercu", action="store_true",
                     help="diagnostic : écrit apercu_capture.jpg (ce que voit le moteur) toutes les 10 s")
     ap.add_argument("--gt", default=None, help=argparse.SUPPRESS)

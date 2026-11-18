@@ -32,7 +32,8 @@
   let lastSig = "", sigT = 0, relocated = true, hover = null;
   // os du squelette (points COCO : 5/6 épaules, 7/8 coudes, 9/10 poignets, 11/12 hanches, 13/14 genoux, 15/16 chevilles)
   const BONES = [[5, 6], [5, 7], [7, 9], [6, 8], [8, 10], [5, 11], [6, 12], [11, 12], [11, 13], [13, 15], [12, 14], [14, 16]];
-  let video = null, state = null, roster = null, prevBoxes = {}, lastStateT = 0;
+  let video = null, state = null, roster = null, prevBoxes = {}, lastStateT = 0, shown = {}, lagMs = null;
+  let smooth = {}, lastDraw = 0;
   let mode = "team", focus = "our", selected = [], hidden = false, picking = false, markersOn = false;
 
   function onMsg(m) {
@@ -46,7 +47,10 @@
     if (m.type === "located") { markersOn = false; return; }
     if (m.type === "state") {
       const now = performance.now();
-      if (state) for (const p of state.players) prevBoxes[p.tid] = { box: p.box, t: lastStateT };
+      const tsNow = Date.now() / 1000;
+      for (const p of m.players) shown[p.tid] = { p, ts: m.ts || tsNow, seen: tsNow };
+      for (const k in shown) if (tsNow - shown[k].seen > 1.0) delete shown[k];
+      lagMs = m.ts ? Math.round((tsNow - m.ts) * 1000) : null;
       state = m; lastStateT = now; mode = m.mode;
       if (m.focus && m.focus !== focus) { focus = m.focus; buildPicker(); }
       modeBtns.forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
@@ -164,9 +168,14 @@
     const r = cv.getBoundingClientRect();
     const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
     let best = null, bd = 1e9;
-    for (const p of (state ? state.players : [])) {
-      if (p.ref) continue;                  // un arbitre ne s'identifie pas
-      const [x1, y1, x2, y2] = p.box;
+    const nowS = Date.now() / 1000;
+    for (const k in shown) {                // position prédite : là où le squelette est dessiné
+      const S = shown[k], p = S.p;
+      if (p.ref || nowS - S.seen > 0.6) continue;   // un arbitre ne s'identifie pas
+      const dt = Math.min(Math.max(nowS - S.ts, 0), 0.6);
+      let ox = p.v ? p.v[0] * dt : 0, oy = p.v ? p.v[1] * dt : 0;
+      if (smooth[k]) { ox = smooth[k].x - (p.box[0] + p.box[2]) / 2; oy = smooth[k].y - p.box[3]; }   // là où il est dessiné
+      const x1 = p.box[0] + ox, y1 = p.box[1] + oy, x2 = p.box[2] + ox, y2 = p.box[3] + oy;
       const d = Math.hypot((x1 + x2) / 2 - x, (y1 + y2) / 2 - y);
       if (x > x1 - 0.02 && x < x2 + 0.02 && y > y1 - 0.03 && y < y2 + 0.02 && d < bd) { best = p; bd = d; }
     }
@@ -238,7 +247,8 @@
                     perdu: "patinoire non repérée", "échec": "calibration impossible" }[st.calib] || st.calib;
     const clk = s.clock && s.clock.remaining != null ? ` · P${s.clock.period} ${fmt(s.clock.remaining)}${s.clock.running ? "" : " ⏸"}` : "";
     const mail = st.our_color && roster && roster.abbr ? ` · ${roster.abbr.our} en ${st.our_color}` : "";
-    const pz = s.paused ? " · ⏸ pause : identification (clique « Identifier »)" : "";
+    const pz = (s.paused ? " · ⏸ pause : identification (clique sur un squelette)" : "")
+      + (lagMs != null ? ` · retard ${lagMs} ms` : "");
     $("status").textContent = `${st.match || "sans feuille de match"}${clk} · ${calib}${mail} · ${s.fps} im/s${pz}`;
     let h = "";
     for (const p of s.pp || []) {
@@ -354,19 +364,33 @@
     const fs2 = Math.max(11, Math.min(15, H / 60));
     ctx.font = `600 ${fs2}px Inter, Segoe UI, sans-serif`;
     ctx.textBaseline = "middle";
-    for (const p of state.players) {
+    const nowS = Date.now() / 1000;
+    const frameDt = Math.min(0.1, nowS - (lastDraw || nowS)); lastDraw = nowS;
+    for (const k in smooth) if (!shown[k]) delete smooth[k];
+    for (const k in shown) {
+      const S = shown[k], p = S.p;
+      const missing = nowS - S.seen;
+      if (missing > 0.6) continue;                       // perdu depuis trop longtemps
+      // position prédite à l'instant de l'affichage : capture + vitesse x (maintenant - capture)
+      const dt = Math.min(Math.max(nowS - S.ts, 0), 0.6);
+      const vx = p.v ? p.v[0] : 0, vy = p.v ? p.v[1] : 0;
+      // cible = position prédite ; l'affichage la rejoint en douceur (pas de saut à chaque mise à jour)
+      const tx = (p.box[0] + p.box[2]) / 2 + vx * dt, ty = p.box[3] + vy * dt;
+      const sm = smooth[k] || (smooth[k] = { x: tx, y: ty });
+      const kk = Math.min(1, frameDt * 14);
+      sm.x += (tx - sm.x) * kk; sm.y += (ty - sm.y) * kk;
+      if (Math.abs(tx - sm.x) > 0.08 || Math.abs(ty - sm.y) > 0.08) { sm.x = tx; sm.y = ty; }   // grand saut : on recale
+      const ox = sm.x - (p.box[0] + p.box[2]) / 2, oy = sm.y - p.box[3];
       let [x1, y1, x2, y2] = p.box;
-      const pv = prevBoxes[p.tid];
-      if (pv && lastStateT > pv.t) {
-        const k = dtNow / (lastStateT - pv.t);
-        if (k < 3) { const dx = ((x1 + x2) - (pv.box[0] + pv.box[2])) / 2 * k, dy = (y2 - pv.box[3]) * k; x1 += dx; x2 += dx; y1 += dy; y2 += dy; }
-      }
+      x1 += ox; x2 += ox; y1 += oy; y2 += oy;
+      const fade = missing > 0.2 ? Math.max(0.25, 1 - (missing - 0.2) / 0.4) : 1;   // joueur momentanément perdu
+      ctx.globalAlpha = fade;
       const cx = (x1 + x2) / 2 * W, top = y1 * H;
       if (p.ref) {                         // arbitre : squelette gris + « ARB », jamais cliquable
         if (p.kp) {
           ctx.strokeStyle = "rgba(200,200,200,.7)"; ctx.lineWidth = 1.4; ctx.beginPath();
           for (const [a, b2] of BONES) { const A = p.kp[a], B = p.kp[b2]; if (!A || !B) continue;
-            ctx.moveTo(A[0] * W, A[1] * H); ctx.lineTo(B[0] * W, B[1] * H); }
+            ctx.moveTo((A[0] + ox) * W, (A[1] + oy) * H); ctx.lineTo((B[0] + ox) * W, (B[1] + oy) * H); }
           ctx.stroke();
         }
         ctx.fillStyle = "rgba(10,14,22,.75)"; ctx.fillRect(cx - 15, top - 18, 30, 14);
@@ -380,7 +404,7 @@
       if (p.kp && (p.side === focus || !p.side || picking)) {   // gris si l'équipe n'est pas encore connue
         const dx = (x1 - p.box[0]) * W, dy = (y1 - p.box[1]) * H;
         const hot = picking && hover === p.tid;
-        ctx.strokeStyle = col; ctx.globalAlpha = p.side === focus ? (hot ? 1 : 0.75) : 0.35;
+        ctx.strokeStyle = col; ctx.globalAlpha = fade * (p.side === focus ? (hot ? 1 : 0.85) : 0.45);
         ctx.lineWidth = hot ? 4 : (picking ? 2.5 : 1.6); ctx.lineCap = "round";
         ctx.beginPath();
         for (const [a, b] of BONES) {
@@ -391,7 +415,7 @@
         ctx.stroke();
         const nose = p.kp[0] || p.kp[1] || p.kp[2];
         if (nose) { ctx.beginPath(); ctx.arc(nose[0] * W + dx, nose[1] * H + dy, hot ? 5 : 3.5, 0, 7); ctx.stroke(); }
-        ctx.globalAlpha = 1;
+        ctx.globalAlpha = fade;
       }
       if (!p.num) {                    // pas encore identifié : simple point de couleur d'équipe
         if (p.side && state.mode === "team") { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(cx, top - 6, 3.5, 0, 7); ctx.fill(); }
@@ -409,6 +433,7 @@
       if (sw) { ctx.fillStyle = shiftColor(p.shift); ctx.beginPath(); ctx.roundRect(bx + tw + 10, by + 2, sw - 2, bh - 4, 3); ctx.fill();
         ctx.fillStyle = "#081018"; ctx.fillText(stxt, bx + tw + 14, by + bh / 2 + 1); }
     }
+    ctx.globalAlpha = 1;
     // mini vue tactique (coin haut droit, dans les tribunes)
     const mh = H * TOP - 8, mw = Math.min(W * 0.27, mh * 2);
     if (state.mode === "players") {

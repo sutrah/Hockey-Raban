@@ -313,6 +313,8 @@ class Engine:
         self.track_hist = {}
         self.ref_hits = {}
         self.next_recog = {}
+        self.pose_smooth = {}
+        self.vel_smooth = {}
         self.crossings = {}
         self.collect_count = {}
         self.still_since = None
@@ -700,6 +702,7 @@ class Engine:
     # -------------------------------------------------------------- 1 image
     def process(self, idx, frame, now, dtw):
         a = self.a
+        self.cap_ts = time.time()                         # instant de la capture (horloge du PC)
         self.latest = frame
         game_t = self.game_time(now, dtw)
         if self.sb.period and self.sb.period != self.last_period:
@@ -712,6 +715,7 @@ class Engine:
                 self.rec.event(game_t, "score", score=list(self.sb.score))
             self.last_score = self.sb.score
 
+        # (le lissage du squelette se fait après la détection, voir _smooth_pose)
         # --- vidéo en pause ? (image identique depuis plus d'1 s) -> lecture approfondie des numéros
         # vraie pause = image STRICTEMENT figée (en jeu, même caméra immobile, le bruit de la
         # compression et les joueurs font bouger l'image bien plus que ce seuil)
@@ -729,6 +733,9 @@ class Engine:
 
         # --- détection
         dets = self._detect(idx, frame, now)
+        # public, banc, tribunes : on ne garde que les personnes qui ont les pieds sur la glace
+        dets = [d for d in dets if self._on_ice(frame, d)]
+        self._smooth_pose(dets, now)
         boxes = [d["box"] for d in dets]
 
         # --- calibration : on collecte quelques images, puis estimation en arrière-plan
@@ -743,6 +750,7 @@ class Engine:
                     self.static = static_mask_from_frames(self.calib_frames)
                     self._calibrate_async()
         H = self.cam.update(idx, frame, boxes) if self.cam is not None else None
+        self._last_H = H
 
         # --- équipes (couleurs apprises sur les premières secondes)
         if not self.clf_ready:
@@ -990,6 +998,57 @@ class Engine:
         self.validated = {t: k for t, k in self.validated.items() if t in seen_now or t in self.known}
         vis = {(d["side"], d["num"]) for d in dets if d["num"]}
         self.recent_lost = {m["key"] for m in self.known.values() if m["key"] not in vis}
+
+    def _smooth_pose(self, dets, now, a=0.55, hold=0.35):
+        """Lissage du squelette par joueur suivi : chaque point est moyenné avec sa position
+        précédente (exprimée par rapport aux pieds, pour ne pas freiner le déplacement), et un
+        point qui manque est gardé brièvement (hold s) au lieu de faire disparaître le membre."""
+        for d in dets:
+            kp, t = d.get("kp"), d["tid"]
+            if kp is None or t < 0:
+                continue
+            x1, y1, x2, y2 = d["box"]
+            ref = np.array([(x1 + x2) / 2, y2])
+            rel = kp[:, :2] - ref
+            prev = self.pose_smooth.get(t)
+            out = kp.copy()
+            if prev is not None:
+                prel, pconf, pt = prev
+                for i in range(len(kp)):
+                    if kp[i, 2] > 0.35 and pconf[i] > 0.35:
+                        rel[i] = a * rel[i] + (1 - a) * prel[i]
+                    elif kp[i, 2] <= 0.35 and pconf[i] > 0.35 and now - pt[i] < hold:
+                        rel[i] = prel[i]                  # point momentanément caché : on le garde
+                        out[i, 2] = pconf[i] * 0.9
+            out[:, :2] = rel + ref
+            seen = np.where(out[:, 2] > 0.35, now, prev[2] if prev is not None else now)
+            self.pose_smooth[t] = (rel.copy(), out[:, 2].copy(), seen)
+            d["kp"] = out
+        if len(self.pose_smooth) > 400:
+            live = {d["tid"] for d in dets}
+            self.pose_smooth = {k: v for k, v in self.pose_smooth.items() if k in live}
+
+    def _on_ice(self, frame, d):
+        """Pieds sur la glace ? Zone sous les pieds claire et peu colorée (filet gommé).
+        Une fois la patinoire repérée, on vérifie aussi la position réelle sur la piste."""
+        x1, y1, x2, y2 = d["box"]
+        w, h = x2 - x1, y2 - y1
+        H, W = frame.shape[:2]
+        if self.cam is not None and getattr(self, "_last_H", None) is not None:
+            p = cv2.perspectiveTransform(np.float32([[[(x1 + x2) / 2, y2]]]), self._last_H)[0, 0]
+            if not self.rink.inside(p[0], p[1], 1.0):
+                return False
+        if y2 >= H - 2:
+            return True                                   # pieds coupés par le bas de l'image
+        px1, px2 = int(max(0, x1 - 0.1 * w)), int(min(W, x2 + 0.1 * w))
+        py1, py2 = int(max(0, y2 - 0.04 * h)), int(min(H, y2 + 0.12 * h + 2))
+        patch = frame[py1:py2, px1:px2]
+        if patch.size == 0:
+            return True
+        patch = cv2.morphologyEx(patch, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        lab = cv2.cvtColor(patch, cv2.COLOR_BGR2LAB).astype(np.int16)
+        ice = (lab[..., 0] > 135) & (np.hypot(lab[..., 1] - 128, lab[..., 2] - 128) < 30)
+        return ice.mean() > 0.25
 
     def _crossing_guard(self, dets, now):
         """Quand deux joueurs (même équipe) se superposent, le suivi peut échanger leurs pistes.
@@ -1324,6 +1383,15 @@ class Engine:
             kp = d.get("kp")
             if kp is not None:
                 p["kp"] = [[round(float(x) / W, 4), round(float(y) / Hh, 4)] if c > 0.35 else None for x, y, c in kp]
+            hist = self.track_hist.get(d["tid"])
+            if hist and len(hist) >= 3:                  # vitesse à l'écran (fraction d'image / s)
+                (t0, c0), (t1, c1) = hist[max(0, len(hist) - 4)], hist[-1]
+                if t1 - t0 > 0.05:
+                    v = (c1 - c0) / (t1 - t0)
+                    pv = self.vel_smooth.get(d["tid"])
+                    v = v if pv is None else 0.5 * v + 0.5 * pv          # vitesse lissée
+                    self.vel_smooth[d["tid"]] = v
+                    p["v"] = [round(float(v[0]) / W, 4), round(float(v[1]) / Hh, 4)]
             if num and side:
                 info = self._roster(side).get(num, {})
                 p["name"] = info.get("short", "")
@@ -1334,6 +1402,7 @@ class Engine:
                 p["dist"] = round(k.dist)
             players.append(p)
         msg = dict(type="state", mode=self.mode, focus=self.focus, fps=round(self.fps, 1), paused=self.paused,
+                   ts=round(self.cap_ts, 3),
                    status=dict(calib=self.calib_state if self.cam is None else ("ok" if calibrated else "perdu"),
                                match=(f"{self.match.short['home']} / {self.match.short['away']}" if self.match else None),
                                sides=len(self.cluster_side) == 2, colors=self.clf_ready,
@@ -1410,8 +1479,8 @@ def main():
                     help="maillot de ton équipe (défaut : sombre à domicile, clair à l'extérieur)")
     ap.add_argument("--weights", default="yolov8s-pose.pt",
                     help="détecteur (défaut : avec squelette ; yolov8s.pt = sans squelette)")
-    ap.add_argument("--imgsz", type=int, default=960)
-    ap.add_argument("--conf", type=float, default=0.3)
+    ap.add_argument("--imgsz", type=int, default=1280, help="taille d'analyse (plus grand = joueurs du fond mieux vus)")
+    ap.add_argument("--conf", type=float, default=0.22)
     ap.add_argument("--device", default=None)
     ap.add_argument("--fps", type=float, default=10, help="images analysées par seconde (mode équipe)")
     ap.add_argument("--fps-players", type=float, default=12, help="idem en mode joueurs choisis")

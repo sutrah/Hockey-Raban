@@ -457,16 +457,13 @@
       const fade = missing > 0.2 ? Math.max(0.25, 1 - (missing - 0.2) / 0.4) : 1;   // joueur momentanément perdu
       ctx.globalAlpha = fade;
       const cx = (x1 + x2) / 2 * W, top = y1 * H;
-      if (p.ref) {                         // arbitre : squelette gris + « ARB », jamais cliquable
-        if (p.kp) {
-          ctx.strokeStyle = "rgba(200,200,200,.7)"; ctx.lineWidth = 1.4; ctx.beginPath();
-          for (const [a, b2] of BONES) { const A = p.kp[a], B = p.kp[b2]; if (!A || !B) continue;
-            ctx.moveTo((A[0] + ox) * W, (A[1] + oy) * H); ctx.lineTo((B[0] + ox) * W, (B[1] + oy) * H); }
-          ctx.stroke();
-        }
-        ctx.fillStyle = "rgba(10,14,22,.75)"; ctx.fillRect(cx - 15, top - 18, 30, 14);
-        ctx.fillStyle = "#ddd"; ctx.font = "700 10px sans-serif"; ctx.textAlign = "center";
-        ctx.fillText("ARB", cx, top - 10); ctx.textAlign = "start";
+      if (p.ref) {                         // arbitre désigné : encadré vert + « ARB » (exclu des calculs)
+        const REFC = "#3ecf8e";
+        ctx.strokeStyle = REFC; ctx.lineWidth = hover === p.tid ? 4 : 2.5;
+        ctx.strokeRect(x1 * W, y1 * H, (x2 - x1) * W, (y2 - y1) * H);
+        ctx.fillStyle = "rgba(10,14,22,.8)"; ctx.fillRect(cx - 17, top - 19, 34, 15);
+        ctx.fillStyle = REFC; ctx.font = "700 11px sans-serif"; ctx.textAlign = "center";
+        ctx.fillText("ARB", cx, top - 8); ctx.textAlign = "start";
         ctx.font = `600 ${fs2}px Inter, Segoe UI, sans-serif`;
         continue;
       }

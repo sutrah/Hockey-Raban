@@ -63,6 +63,8 @@ Garde la souris hors de la vidéo : la barre de commandes du lecteur gêne l'ana
 4. Seuls les numéros présents sur la feuille de match sont acceptés, et un numéro n'est porté
    que par un joueur à la fois.
 5. Si un numéro reste illisible, « Identifier » + un clic suffit.
+6. Un arbitre désigné au clic (« Arbitre ») est affiché en encadré vert « ARB » et exclu des calculs ;
+   « Pas un joueur » (ou la touche X) le masque.
 
 ## Tester sur un replay
 

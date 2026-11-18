@@ -54,7 +54,8 @@ class MatchMemory:
         old = [e for e in self.frames.get(key, []) if e[7] != self.session]
         new = []
         for side, num, x, y, h, src, tid in entries:
-            new.append([side, num, round(x, 4), round(y, 4), round(h, 4), src, round(now, 1), self.session, tid])
+            new.append([side, num, round(float(x), 4), round(float(y), 4), round(float(h), 4), src, round(now, 1),
+                        self.session, int(tid)])
             self.track_keys.setdefault(tid, []).append(key)
         self.frames[key] = old + new
         self.dirty = True
@@ -102,6 +103,7 @@ class MatchMemory:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         tmp = self.path + ".tmp"
         with open(tmp, "w") as f:
-            json.dump(dict(version=1, frames=self.frames), f, separators=(",", ":"))
+            json.dump(dict(version=1, frames=self.frames), f, separators=(",", ":"),
+                      default=lambda o: o.item() if hasattr(o, "item") else str(o))
         os.replace(tmp, self.path)
         self.dirty = False

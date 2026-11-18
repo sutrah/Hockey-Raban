@@ -183,8 +183,8 @@ for f in range(N):
             cv2.fillPoly(img, [np.int32(torso)], JERSEY[p["team"]], cv2.LINE_AA)
         else:
             cv2.fillPoly(img, [np.int32(torso)], (240, 240, 240), cv2.LINE_AA)
-            for s in np.linspace(-0.25, 0.2, 4):
-                st = proj(P, np.array([pt(s, 0.85), pt(s + 0.08, 0.85), pt(s + 0.08, 1.48), pt(s, 1.48)]))
+            for s in np.linspace(-0.30, 0.255, 7):          # maillot rayé : ~7 bandes noires
+                st = proj(P, np.array([pt(s, 0.85), pt(s + 0.045, 0.85), pt(s + 0.045, 1.48), pt(s, 1.48)]))
                 cv2.fillPoly(img, [np.int32(st)], (15, 15, 15), cv2.LINE_AA)
         cv2.circle(img, (int(head[0]), int(head[1])), max(2, int(hr)), (25, 25, 25), -1, cv2.LINE_AA)
         allp = np.vstack([legs, torso, [head + [0, -hr]]])

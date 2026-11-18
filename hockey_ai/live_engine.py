@@ -31,7 +31,7 @@ from live_capture import FileSource, ScreenSource, static_mask_from_frames
 from live_ocr import NumberVotes, Scoreboard, Worker, back_crop, pose_crops, read_number
 from live_state import Kin, Pressure, Recorder, Shifts
 from rink import PRESETS, Rink
-from teams import REF, UNK, TeamClassifier, jersey_feature
+from teams import REF, UNK, TeamClassifier, jersey_feature, referee_score
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 8765
@@ -305,6 +305,7 @@ class Engine:
         self.prev_small = None
         self.collect_next = {}
         self.track_hist = {}
+        self.ref_hits = {}
         self.crossings = {}
         self.collect_count = {}
         self.still_since = None
@@ -637,6 +638,8 @@ class Engine:
                 x1, y1, x2, y2 = d["box"]
                 if y2 < 0.3 * Hh or (y2 - y1) < 40:        # tribunes ou trop petit
                     continue
+                if referee_score(frame, d["box"], d.get("kp")) > 0.3:   # arbitre
+                    continue
                 self.clf.add_sample(jersey_feature(frame, d["box"]))
             if len(self.clf.samples) >= 60:
                 try:
@@ -650,6 +653,14 @@ class Engine:
             lab = self.clf.predict(jersey_feature(frame, d["box"])) if self.clf_ready else UNK
             if d["tid"] >= 0:
                 lab = self.clf.vote(d["tid"], lab)
+            # arbitres : maillot rayé (et brassard) repéré grâce au squelette ; 3 images
+            # « rayées » sur une même piste suffisent, l'arbitre reste arbitre ensuite
+            t = d["tid"]
+            if t >= 0 and t not in self.manual_side and (d["box"][3] - d["box"][1]) >= 40:
+                if referee_score(frame, d["box"], d.get("kp")) > 0.3:
+                    self.ref_hits[t] = self.ref_hits.get(t, 0) + 1
+            if self.ref_hits.get(t, 0) >= 3:
+                lab = REF
             d["cluster"] = lab
             self.last_cluster[d["tid"]] = lab
             d["side"] = self.cluster_side.get(lab) if lab in (0, 1) else None
@@ -1160,6 +1171,12 @@ class Engine:
         players = []
         for d in dets:
             if d["cluster"] == REF:
+                if d.get("kp") is not None:
+                    x1, y1, x2, y2 = d["box"]
+                    players.append(dict(tid=int(d["tid"]), ref=True, side=None, num=None,
+                                        box=[round(x1 / W, 4), round(y1 / Hh, 4), round(x2 / W, 4), round(y2 / Hh, 4)],
+                                        kp=[[round(float(x) / W, 4), round(float(y) / Hh, 4)] if c > 0.35 else None
+                                            for x, y, c in d["kp"]]))
                 continue
             x1, y1, x2, y2 = d["box"]
             side, num = d["side"], d["num"]

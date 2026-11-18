@@ -165,6 +165,7 @@
     const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
     let best = null, bd = 1e9;
     for (const p of (state ? state.players : [])) {
+      if (p.ref) continue;                  // un arbitre ne s'identifie pas
       const [x1, y1, x2, y2] = p.box;
       const d = Math.hypot((x1 + x2) / 2 - x, (y1 + y2) / 2 - y);
       if (x > x1 - 0.02 && x < x2 + 0.02 && y > y1 - 0.03 && y < y2 + 0.02 && d < bd) { best = p; bd = d; }
@@ -361,6 +362,19 @@
         if (k < 3) { const dx = ((x1 + x2) - (pv.box[0] + pv.box[2])) / 2 * k, dy = (y2 - pv.box[3]) * k; x1 += dx; x2 += dx; y1 += dy; y2 += dy; }
       }
       const cx = (x1 + x2) / 2 * W, top = y1 * H;
+      if (p.ref) {                         // arbitre : squelette gris + « ARB », jamais cliquable
+        if (p.kp) {
+          ctx.strokeStyle = "rgba(200,200,200,.7)"; ctx.lineWidth = 1.4; ctx.beginPath();
+          for (const [a, b2] of BONES) { const A = p.kp[a], B = p.kp[b2]; if (!A || !B) continue;
+            ctx.moveTo(A[0] * W, A[1] * H); ctx.lineTo(B[0] * W, B[1] * H); }
+          ctx.stroke();
+        }
+        ctx.fillStyle = "rgba(10,14,22,.75)"; ctx.fillRect(cx - 15, top - 18, 30, 14);
+        ctx.fillStyle = "#ddd"; ctx.font = "700 10px sans-serif"; ctx.textAlign = "center";
+        ctx.fillText("ARB", cx, top - 10); ctx.textAlign = "start";
+        ctx.font = `600 ${fs2}px Inter, Segoe UI, sans-serif`;
+        continue;
+      }
       const col = p.side ? C[p.side] : "rgba(255,255,255,.6)";
       // squelette : épaisseur plus forte en mode identification et pour le joueur survolé
       if (p.kp && (p.side === focus || picking)) {

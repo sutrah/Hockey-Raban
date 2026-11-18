@@ -7,7 +7,7 @@ from collections import deque
 import numpy as np
 
 MAX_KMH = 45.0
-SHIFT_GAP = 40.0        # s sans être vu -> la présence est terminée
+SHIFT_GAP = 30.0        # s sans être vu -> sorti de la glace, la présence est terminée
 SKATERS = 5
 
 

@@ -35,6 +35,9 @@ from teams import REF, UNK, TeamClassifier, jersey_feature
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 8765
+# dimensions connues : plus besoin de les deviner (1 800 m² = 60 x 30 m confirmé pour la Rïnkla)
+KNOWN_RINKS = {"rinkla": "iihf"}
+MEMORY_S = 30.0          # un joueur non vu depuis 30 s est sorti de la glace : on l'oublie
 COLORS = {"our": "#4a9eff", "them": "#f5b928"}
 
 
@@ -258,7 +261,9 @@ class Engine:
         self.calib_t = 0.0
         self.last_cluster = {}
         self.manual_side = {}
-        self.known = {}          # tid -> dict(key, cluster, t, world, center, h) : joueurs identifiés
+        self.known = {}          # tid -> dict(key, cluster, t, world, center, h, valid) : joueurs identifiés
+        self.validated = {}      # tid -> (camp, num) : identité sûre, le numéro n'est plus relu
+        self.recent_lost = set() # (camp, num) sortis du champ depuis moins de 30 s
         # lecture du bandeau (1 fois/s) et des numéros : en arrière-plan
         self.latest = None
         if not os.environ.get("HOCKEY_NO_SB"):
@@ -326,7 +331,8 @@ class Engine:
 
         def work():
             from concurrent.futures import ProcessPoolExecutor
-            presets = [self.a.rink] if self.a.rink else ["iihf", "iihf_26"]
+            known = next((p for k, p in KNOWN_RINKS.items() if k in slug(self._profile_path())), None)
+            presets = [self.a.rink or known] if (self.a.rink or known) else ["iihf", "iihf_26"]
             best = (1e9, None, None)
             t0 = time.time()
             # un processus par format de patinoire : calcul en parallèle, hors du direct
@@ -555,10 +561,15 @@ class Engine:
             d["num"] = None
             if d.get("key"):
                 d["side"], d["num"] = d["key"]
+            elif d["tid"] in self.validated:
+                d["side"], d["num"] = self.validated[d["tid"]]
             elif d["tid"] >= 0:
-                num, _ = self.votes.get(d["tid"])
+                num, conf = self.votes.get(d["tid"])
                 if num and d["side"] and num in self._roster(d["side"]):
                     d["num"] = num
+                    n = self.votes.reads[d["tid"]][num]
+                    if d["tid"] in self.votes.manual or (conf >= 0.8 and n >= 3):
+                        self.validated[d["tid"]] = (d["side"], num)      # validé : plus de lecture
 
         # --- positions sur la glace, vitesses, présences
         world = []
@@ -703,7 +714,14 @@ class Engine:
                 if m["cluster"] != d["cluster"] or m["key"] in visible:
                     continue
                 gap = now - m["t"]
+                if gap > MEMORY_S:
+                    continue
                 if gap > 6.0:
+                    # longue absence : on ne reprend le nom que s'il n'y a aucune ambiguïté
+                    same = [x for x in lost if x["cluster"] == d["cluster"] and x["key"] not in visible
+                            and 6.0 < now - x["t"] <= MEMORY_S]
+                    if len(same) == 1 and (best is None):
+                        best, bscore = m, 1e6
                     continue
                 if d.get("world") and m["world"]:
                     dist = np.hypot(d["world"][0] - m["world"][0], d["world"][1] - m["world"][1])
@@ -719,6 +737,8 @@ class Engine:
                 side, num = best["key"]
                 self.votes.votes[d["tid"]][num] += 2.0       # repris : vaut des lectures sûres
                 self.votes.reads[d["tid"]][num] += 3
+                if best.get("valid"):
+                    self.validated[d["tid"]] = (side, num)
                 d["side"], d["num"] = side, num
                 visible.add(best["key"])
                 self.known = {t: m for t, m in self.known.items() if m is not best}
@@ -726,11 +746,17 @@ class Engine:
         for d in dets:
             if d["num"] and d["side"] and d["tid"] >= 0:
                 self.known[d["tid"]] = dict(key=(d["side"], d["num"]), cluster=d["cluster"], t=now,
+                                            valid=d["tid"] in self.validated,
                                             world=d.get("world"),
                                             center=np.array([(d["box"][0] + d["box"][2]) / 2,
                                                              (d["box"][1] + d["box"][3]) / 2]),
                                             h=d["box"][3] - d["box"][1])
-        self.known = {t: m for t, m in self.known.items() if now - m["t"] < 30}
+        # au-delà de 30 s sans être vu : sorti de la glace, oublié jusqu'à son retour
+        self.known = {t: m for t, m in self.known.items() if now - m["t"] < MEMORY_S}
+        seen_now = {d["tid"] for d in dets}
+        self.validated = {t: k for t, k in self.validated.items() if t in seen_now or t in self.known}
+        vis = {(d["side"], d["num"]) for d in dets if d["num"]}
+        self.recent_lost = {m["key"] for m in self.known.values() if m["key"] not in vis}
 
     def _resolve_sides(self):
         """Quelle couleur de maillot = quelle équipe (d'après les numéros lus et les clics du coach)."""
@@ -772,9 +798,13 @@ class Engine:
                         if d is not None:
                             d["key"] = key
                         break
-            else:
+            elif tid not in self.validated:
                 allowed = set(self._roster(side)) if side else set(self._roster("our")) | set(self._roster("them"))
                 self.votes.add(tid, reads, allowed)
+                for num, conf in reads:             # joueur revenu dans le champ : une lecture suffit
+                    if side and (side, num) in self.recent_lost and conf >= 0.5:
+                        self.votes.votes[tid][num] += 1.0
+                        self.votes.reads[tid][num] += 2
         want_side = None
         if self.mode == "players":
             missing = [k for k in self.selected if k not in self.locked]
@@ -788,7 +818,7 @@ class Engine:
             h = d["box"][3] - d["box"][1]
             if h < self.a.min_px or now < self.next_ocr.get(d["tid"], 0):
                 continue
-            if self.mode == "team" and (self.votes.get(d["tid"])[0] or d["tid"] in self.votes.manual):
+            if self.mode == "team" and (d["tid"] in self.validated or d["tid"] in self.votes.manual):
                 continue
             if want_side and d["side"] and d["side"] not in want_side:
                 continue

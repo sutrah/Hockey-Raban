@@ -157,11 +157,16 @@
   }, true);
   document.addEventListener("keydown", (e) => {
     if (e.altKey && (e.key === "h" || e.key === "H")) toggleHidden();
+    const typing = /INPUT|TEXTAREA/.test((document.activeElement || {}).tagName || "");
+    if ((e.key === "x" || e.key === "X") && !typing && hover != null && !menuOpen) {   // X : faux positif
+      send({ type: "referee", tid: hover, is_ref: true, off: true });
+      if (shown[hover]) delete shown[hover];
+      hover = null;
+    }
     if (e.key === "[" || e.key === "]") {               // anticipation du déplacement
       leadMs = Math.max(-100, Math.min(400, leadMs + (e.key === "]" ? 20 : -20)));
       try { localStorage.setItem("hockeyai_lead", String(leadMs)); } catch (er) {}
     }
-    const typing = /INPUT|TEXTAREA/.test((document.activeElement || {}).tagName || "");
     if (!typing && !e.altKey && !e.ctrlKey && (e.key === "i" || e.key === "I")) {   // touche I : identifier
       picking = !picking; cv.classList.toggle("pick", picking); $("idBtn").classList.toggle("on", picking);
     }

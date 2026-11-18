@@ -66,13 +66,29 @@ class ScreenSource:
         self.log = log
         self.idx = 0
         self.last = None
+        self.none_streak = 0
+        self.same_streak = 0
         log(f"[capture] écran via {self.grab.backend}")
+
+    def reset(self):
+        """Recrée la capture (après un passage en plein écran, Windows peut la bloquer)."""
+        try:
+            cam = getattr(self.grab, "cam", None)
+            if cam is not None:
+                cam.release()
+                del cam
+        except Exception:
+            pass
+        self.grab = _full_screen_grabber()
+        self.last = None
+        self.none_streak = self.same_streak = 0
 
     def full(self):
         return self.grab(None)
 
     def locate(self, tries=12, wait=0.12):
         """Cherche les marqueurs magenta affichés par l'extension."""
+        self.reset()                    # l'affichage a pu changer (plein écran, fenêtre…)
         for _ in range(tries):
             img = self.full()
             if img is not None:
@@ -86,9 +102,25 @@ class ScreenSource:
     def read(self):
         if self.region is None:
             return None, None
-        f = self.grab(self.region)
+        try:
+            f = self.grab(self.region)
+        except Exception:
+            f = None
         if f is None:                       # dxcam : rien n'a changé depuis la dernière image
+            self.none_streak += 1
+            if self.none_streak > 40:       # ~4 s sans image : capture bloquée, on la recrée
+                self.log("[capture] capture bloquée, redémarrage")
+                self.reset()
             f = self.last
+        else:
+            self.none_streak = 0
+            if f.size and f.max() < 12:     # image noire (transition plein écran)
+                self.same_streak += 1
+                if self.same_streak > 40:
+                    self.log("[capture] image noire persistante, redémarrage de la capture")
+                    self.reset()
+            else:
+                self.same_streak = 0
         if f is None:
             return None, None
         self.last = f

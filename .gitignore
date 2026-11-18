@@ -5,3 +5,4 @@ __pycache__/
 *.pt
 hockey_ai/patinoires/
 hockey_ai/matchs/
+hockey_ai/apercu_capture.jpg

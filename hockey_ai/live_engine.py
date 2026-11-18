@@ -44,6 +44,13 @@ def slug(s):
     return re.sub(r"[^a-z0-9]+", "-", s).strip("-") or "patinoire"
 
 
+def calibrate_worker(frames, preset, static):
+    """Exécuté dans un processus séparé : position de la caméra pour un format de patinoire."""
+    c, cost = estimate_camera_center(None, Rink(preset), None, static, log=lambda *a: None,
+                                     frames=list(enumerate(frames)))
+    return (None if c is None else [float(v) for v in c]), (None if cost is None else float(cost))
+
+
 # ------------------------------------------------------------------ détection
 class Detector:
     """YOLO (personnes). track() : suivi plein écran ; detect() : image ou zone, sans suivi."""
@@ -52,8 +59,12 @@ class Detector:
         from ultralytics import YOLO
         self.track_model = YOLO(weights)
         self.det_model = YOLO(weights)
-        half = device not in (None, "cpu", "mps")
-        self.kw = dict(classes=[0], conf=conf, iou=0.5, verbose=False, half=half)
+        try:                                    # pas de messages répétés dans la console
+            from ultralytics.utils import LOGGER
+            LOGGER.setLevel("ERROR")
+        except Exception:
+            pass
+        self.kw = dict(classes=[0], conf=conf, iou=0.5, verbose=False)
         if device:
             self.kw["device"] = device
         self.imgsz = imgsz
@@ -310,17 +321,29 @@ class Engine:
             return
         self.calib_state = "calcul"
         frames = list(self.calib_frames)
+        self.log(f"[calib] calcul de la position de la caméra sur {len(frames)} images "
+                 "(1 à 3 min, une seule fois pour cette patinoire)…")
 
         def work():
+            from concurrent.futures import ProcessPoolExecutor
             presets = [self.a.rink] if self.a.rink else ["iihf", "iihf_26"]
             best = (1e9, None, None)
-            for pr in presets:
-                rk = Rink(pr)
-                c, cost = estimate_camera_center(None, rk, None, self.static, log=self.log,
-                                                 frames=list(enumerate(frames)))
-                self.log(f"[calib] {pr} ({rk.L:.0f}×{rk.W:.0f}) : score {cost if cost else float('nan'):.3f}")
-                if c is not None and cost < best[0]:
-                    best = (cost, c, pr)
+            t0 = time.time()
+            # un processus par format de patinoire : calcul en parallèle, hors du direct
+            with ProcessPoolExecutor(max_workers=len(presets)) as ex:
+                futs = {pr: ex.submit(calibrate_worker, frames, pr, self.static) for pr in presets}
+                for pr, fu in futs.items():
+                    try:
+                        c, cost = fu.result()
+                    except Exception as ex_:
+                        self.log(f"[calib] {pr} : erreur {ex_}")
+                        continue
+                    rk = Rink(pr)
+                    self.log(f"[calib] {pr} ({rk.L:.0f}×{rk.W:.0f}) : score "
+                             f"{cost if cost is not None else float('nan'):.3f}")
+                    if c is not None and cost < best[0]:
+                        best = (cost, np.asarray(c), pr)
+            self.log(f"[calib] terminé en {time.time() - t0:.0f} s")
             if best[1] is None:
                 self.calib_state = "échec"
                 self.log("[calib] patinoire introuvable : vérifie que la vidéo montre bien la glace")
@@ -592,8 +615,12 @@ class Engine:
             st = self.cam.stats if self.cam is not None else None
             loc = f"{100 * st['located'] / max(st['frames'], 1):.0f} %" if st else self.calib_state
             ident = sum(1 for d in dets if d["num"])
+            lum = float(frame[::8, ::8].mean())
             self.log(f"[direct] {self.fps:.1f} im/s · patinoire repérée {loc} · {len(dets)} joueurs vus, "
-                     f"{ident} identifiés · bandeau {'lu' if self.sb.box else 'non trouvé'}")
+                     f"{ident} identifiés · bandeau {'lu' if self.sb.box else 'non trouvé'} · "
+                     f"image {frame.shape[1]}x{frame.shape[0]}{' NOIRE' if lum < 12 else ''}")
+            if self.a.apercu:                  # diagnostic : une seule image, remplacée à chaque fois
+                cv2.imwrite(os.path.join(HERE, "apercu_capture.jpg"), cv2.resize(frame, None, fx=0.5, fy=0.5))
         # --- envoi à l'overlay (10 fois/s au plus)
         if now - self.last_send >= 0.1:
             self.last_send = now
@@ -707,13 +734,16 @@ class Engine:
 
     def _resolve_sides(self):
         """Quelle couleur de maillot = quelle équipe (d'après les numéros lus et les clics du coach)."""
-        if len(self.cluster_side) == 2:
-            return
         v = self.side_votes
         d0 = v[0][0] - v[0][1] + v[1][1] - v[1][0]      # cluster 0 = nous, cluster 1 = eux
-        if abs(d0) >= 4:
-            self.cluster_side = {0: "our", 1: "them"} if d0 > 0 else {0: "them", 1: "our"}
-            self.log(f"[équipes] maillots identifiés (score {d0:+.1f})")
+        if abs(d0) >= 8:
+            new = {0: "our", 1: "them"} if d0 > 0 else {0: "them", 1: "our"}
+            if new != self.cluster_side:
+                self.log(f"[équipes] maillots identifiés (score {d0:+.1f})")
+                self.cluster_side = new
+            return
+        if len(self.cluster_side) == 2:
+            return
         if self.a.our_color in ("sombre", "clair") and self.clf_ready and not self.cluster_side:
             L = [c[0] for c in self.clf.centers]
             dark = int(np.argmin(L))
@@ -883,6 +913,8 @@ def main():
     ap.add_argument("--ocr-per-frame", type=int, default=2, help="dos lus par image au plus")
     ap.add_argument("--min-px", type=int, default=55, help="taille mini d'un joueur pour lire son numéro")
     ap.add_argument("--port", type=int, default=PORT)
+    ap.add_argument("--apercu", action="store_true",
+                    help="diagnostic : écrit apercu_capture.jpg (ce que voit le moteur) toutes les 10 s")
     ap.add_argument("--gt", default=None, help=argparse.SUPPRESS)
     Engine(ap.parse_args()).run()
 

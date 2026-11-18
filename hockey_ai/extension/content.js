@@ -90,7 +90,7 @@
     .card{background:#1a2230;border-radius:6px;padding:4px 6px;margin:3px 0}
     .big{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums}
     .menu{position:absolute;pointer-events:auto;background:#111824;color:${C.text};border-radius:8px;padding:6px;
-      max-height:60vh;overflow:auto;font-size:12px;box-shadow:0 4px 18px rgba(0,0,0,.6);min-width:190px}
+      max-height:85vh;overflow:auto;font-size:12px;box-shadow:0 4px 18px rgba(0,0,0,.6);min-width:230px}
     .menu label{display:flex;gap:6px;padding:2px 4px;border-radius:4px;cursor:pointer}
     .menu label:hover{background:#223}
     .hide{display:none}
@@ -157,11 +157,16 @@
   }, true);
   document.addEventListener("keydown", (e) => {
     if (e.altKey && (e.key === "h" || e.key === "H")) toggleHidden();
+    const typing = /INPUT|TEXTAREA/.test((document.activeElement || {}).tagName || "");
+    if ((e.key === "x" || e.key === "X") && !typing && hover != null && !menuOpen) {   // X : faux positif
+      send({ type: "referee", tid: hover, is_ref: true, off: true });
+      if (shown[hover]) delete shown[hover];
+      hover = null;
+    }
     if (e.key === "[" || e.key === "]") {               // anticipation du déplacement
       leadMs = Math.max(-100, Math.min(400, leadMs + (e.key === "]" ? 20 : -20)));
       try { localStorage.setItem("hockeyai_lead", String(leadMs)); } catch (er) {}
     }
-    const typing = /INPUT|TEXTAREA/.test((document.activeElement || {}).tagName || "");
     if (!typing && !e.altKey && !e.ctrlKey && (e.key === "i" || e.key === "I")) {   // touche I : identifier
       picking = !picking; cv.classList.toggle("pick", picking); $("idBtn").classList.toggle("on", picking);
     }
@@ -210,6 +215,10 @@
     return best;
   }
   cv.addEventListener("mousemove", (e) => { if (picking) { const p = playerAt(e); hover = p ? p.tid : null; } });
+  window.addEventListener("mousemove", (e) => {      // survol d'un joueur : encadré épaissi (cliquable)
+    if (picking || menuOpen) return;
+    const p = playerAtPoint(e.clientX, e.clientY); hover = p ? p.tid : null;
+  }, true);
   // Identification : clic sur le squelette -> pause, choix du nom, reprise automatique
   let resumeAfter = false, menuOpen = false;
   function closeMenu() {
@@ -226,11 +235,16 @@
     const list = (side) => (roster ? roster[side] : []).map((p) =>
       `<label data-side="${side}" data-num="${p.num}"><b>${p.num}</b> ${p.name}
        <span style="color:${C.dim}">${p.pos || ""}</span></label>`).join("");
-    m.innerHTML = best.ref
-      ? `<h4>Arbitre ?</h4><label data-notref="1">Ce n'est pas un arbitre</label>
-         <label data-cancel="1" style="color:${C.dim}">✕ Annuler (Échap)</label>`
-      : `<h4>${roster ? roster.names[focus] : ""} · qui est-ce ?${best.num ? ` (actuellement #${best.num})` : ""}</h4>
-      ${list(focus)}<label data-ref="1" style="color:#ddd">⚑ Arbitre</label>
+    const other = focus === "our" ? "them" : "our";
+    const ab = (s) => roster && roster.abbr ? roster.abbr[s] : (s === "our" ? "NOUS" : "EUX");
+    m.innerHTML = `<h4>Qui est-ce ?${best.num ? ` (actuellement #${best.num})` : ""}</h4>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px;margin-bottom:4px">
+        <label data-ref="1" style="color:#ddd">⚑ Arbitre</label>
+        <label data-off="1" style="color:#ddd">✕ Pas un joueur</label>
+        <label data-team="${other}" style="color:${C[other]}">Joueur ${ab(other)}</label>
+        <label data-team="${focus}" style="color:${C[focus]}">${ab(focus)} n° inconnu</label>
+      </div>
+      <h4>${roster ? roster.names[focus] : ""}</h4>${list(focus)}
       <label data-cancel="1" style="color:${C.dim}">✕ Annuler (Échap)</label>`;
     m.style.left = Math.max(0, Math.min(clientX - r.left, r.width - 210)) + "px";
     m.style.top = "8px";
@@ -239,7 +253,8 @@
     m.querySelectorAll("label").forEach((l) => l.onclick = (ev) => {
       ev.stopPropagation();
       if (l.dataset.ref) send({ type: "referee", tid: best.tid, is_ref: true });
-      else if (l.dataset.notref) send({ type: "referee", tid: best.tid, is_ref: false });
+      else if (l.dataset.off) send({ type: "referee", tid: best.tid, is_ref: true, off: true });
+      else if (l.dataset.team) send({ type: "team", tid: best.tid, side: l.dataset.team });
       else if (!l.dataset.cancel) send({ type: "assign", tid: best.tid, side: l.dataset.side, num: l.dataset.num, box: best.box });
       closeMenu();
     });
@@ -257,7 +272,7 @@
     const r = video.getBoundingClientRect();
     if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) return null;
     const p = playerAt({ clientX, clientY });
-    return p && (p.side === focus || p.ref) && p.kp ? p : null;
+    return p && (p.side === focus || !p.side || p.ref) ? p : null;
   }
   for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
     window.addEventListener(type, (e) => {
@@ -456,27 +471,15 @@
         continue;
       }
       const col = p.side ? C[p.side] : "rgba(70,70,80,.9)";      // sans équipe : gris foncé, visible sur la glace
-      // squelette : épaisseur plus forte en mode identification et pour le joueur survolé
-      if (p.kp && (p.side === focus || !p.side || picking)) {   // gris si l'équipe n'est pas encore connue
-        const dx = (x1 - p.box[0]) * W, dy = (y1 - p.box[1]) * H;
-        const hot = picking && hover === p.tid;
-        ctx.strokeStyle = col; ctx.globalAlpha = fade * (p.side === focus ? (hot ? 1 : 0.85) : 0.45);
-        ctx.lineWidth = hot ? 4 : (picking ? 2.5 : 1.6); ctx.lineCap = "round";
-        ctx.beginPath();
-        for (const [a, b] of BONES) {
-          const A = p.kp[a], B = p.kp[b];
-          if (!A || !B) continue;
-          ctx.moveTo(A[0] * W + dx, A[1] * H + dy); ctx.lineTo(B[0] * W + dx, B[1] * H + dy);
-        }
-        ctx.stroke();
-        const nose = p.kp[0] || p.kp[1] || p.kp[2];
-        if (nose) { ctx.beginPath(); ctx.arc(nose[0] * W + dx, nose[1] * H + dy, hot ? 5 : 3.5, 0, 7); ctx.stroke(); }
+      // encadré du joueur (couleur d'équipe ; gris foncé si l'équipe n'est pas encore connue)
+      if (p.side === focus || !p.side || picking) {
+        const hot = hover === p.tid;
+        ctx.strokeStyle = col; ctx.globalAlpha = fade * (p.side === focus ? 1 : 0.7);
+        ctx.lineWidth = hot ? 4 : 2.5;
+        ctx.strokeRect(x1 * W, y1 * H, (x2 - x1) * W, (y2 - y1) * H);
         ctx.globalAlpha = fade;
       }
-      if (!p.num) {                    // pas encore identifié : simple point de couleur d'équipe
-        if (p.side && state.mode === "team") { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(cx, top - 6, 3.5, 0, 7); ctx.fill(); }
-        continue;
-      }
+      if (!p.num) continue;            // pas encore identifié : l'encadré suffit
       let txt = `${p.goalie ? "G " : ""}${p.num} ${p.name || ""}`.trim();
       if (state.mode === "players" && p.speed != null) txt += ` · ${Math.round(p.speed)} km/h · ${p.dist} m`;
       const tw = ctx.measureText(txt).width;

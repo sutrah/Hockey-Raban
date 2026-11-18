@@ -21,7 +21,7 @@ import queue
 import re
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 
 import cv2
 import numpy as np
@@ -32,7 +32,7 @@ from live_ocr import NumberVotes, PlayerRecognizer, Scoreboard, Worker, back_cro
 from live_memory import MatchMemory, tc_key
 from live_state import Kin, Pressure, Recorder, Shifts
 from rink import PRESETS, Rink
-from teams import REF, UNK, TeamClassifier, jersey_feature, referee_score
+from teams import REF, UNK, TeamClassifier, jersey_feature, kit_features, otsu_threshold, referee_score
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 8765
@@ -312,6 +312,14 @@ class Engine:
         self.collect_next = {}
         self.track_hist = {}
         self.ref_hits = {}
+        self.ref_obs = {}
+        self.lum_samples = []
+        self.red_samples = []
+        self.red_team = None
+        self.lum_thr = 110.0
+        self.team_votes = {}
+        self.striped = {}
+        self.ref_disabled = False
         self.next_recog = {}
         self.pose_smooth = {}
         self.vel_smooth = {}
@@ -514,8 +522,16 @@ class Engine:
             self.selected = [(p["side"], str(p["num"])) for p in msg.get("players", [])
                              if p.get("side") == self.focus][:1]
             self.locked = {k: v for k, v in self.locked.items() if k in self.selected}
+        elif t == "referee":                   # le coach désigne (ou retire) un arbitre
+            tid = int(msg.get("tid"))
+            self.ref_hits[tid] = 1000 if msg.get("is_ref") else -10000
+            if msg.get("is_ref"):
+                self.validated.pop(tid, None); self.votes.manual.pop(tid, None); self.manual_side.pop(tid, None)
+            self.log(f"[arbitres] piste {tid} : {'arbitre' if msg.get('is_ref') else 'pas un arbitre'} (à la main)")
         elif t == "assign":                    # le coach a cliqué un joueur et choisi son nom
             tid, side, num = msg.get("tid"), msg.get("side"), str(msg.get("num"))
+            if tid is not None:
+                self.ref_hits[int(tid)] = -10000     # nommé comme joueur : jamais arbitre
             if tid is not None:
                 self.votes.manual[int(tid)] = num
                 self.manual_side[int(tid)] = side
@@ -752,42 +768,77 @@ class Engine:
         H = self.cam.update(idx, frame, boxes) if self.cam is not None else None
         self._last_H = H
 
-        # --- équipes (couleurs apprises sur les premières secondes)
-        if not self.clf_ready:
-            Hh = frame.shape[0]
-            for d in dets:
-                x1, y1, x2, y2 = d["box"]
-                if y2 < 0.3 * Hh or (y2 - y1) < 40:        # tribunes ou trop petit
-                    continue
-                if referee_score(frame, d["box"], d.get("kp")) > 0.3:   # arbitre
-                    continue
-                self.clf.add_sample(jersey_feature(frame, d["box"]))
-            if len(self.clf.samples) >= 60:
-                try:
-                    self.clf.fit()
-                    self.clf_ready = True
-                    self.log("[équipes] couleurs des maillots apprises")
-                except Exception:
-                    pass
+        # --- équipes : règles explicites, pas de regroupement automatique
+        #   torse sombre = équipe en maillot foncé (cluster 0), torse clair = maillot clair (1) ;
+        #   culotte rouge = équipe claire du jour (Orléans : maillot blanc, culotte rouge) ;
+        #   doute = pas d'équipe (squelette gris). Le seuil sombre/clair est calculé sur les
+        #   joueurs du match (méthode d'Otsu), puis voté par joueur suivi (70 % d'accord).
+        Hh = frame.shape[0]
+        feats = {}
+        for d in dets:
+            x1, y1, x2, y2 = d["box"]
+            if (y2 - y1) < 40:
+                continue
+            f = kit_features(frame, d["box"], d.get("kp"))
+            if f is not None:
+                feats[id(d)] = f
+                if not self.clf_ready and self.ref_hits.get(d["tid"], 0) < 100:
+                    self.lum_samples.append(f[0])
+                    self.red_samples.append(f[1])
+        if not self.clf_ready and len(self.lum_samples) >= 80:
+            self.lum_thr = otsu_threshold(self.lum_samples)
+            dark = [v for v in self.lum_samples if v < self.lum_thr]
+            light = [v for v in self.lum_samples if v >= self.lum_thr]
+            self.clf_ready = True
+            self.clf.centers = np.array([[np.median(dark) if dark else 50, 0, 0], [np.median(light) if light else 200, 0, 0]])
+            # culotte rouge caractéristique d'une des deux équipes ? (ex. Orléans : maillot blanc, culotte rouge)
+            rl = [r for v, r in zip(self.lum_samples, self.red_samples) if v >= self.lum_thr]
+            rd = [r for v, r in zip(self.lum_samples, self.red_samples) if v < self.lum_thr]
+            ml, md = (np.median(rl) if rl else 0), (np.median(rd) if rd else 0)
+            self.red_team = 1 if (ml > 0.25 and md < 0.1) else (0 if (md > 0.25 and ml < 0.1) else None)
+            if self.red_team is not None:
+                self.log(f"[équipes] culotte rouge = équipe en maillot {'clair' if self.red_team == 1 else 'sombre'}")
+            self.log(f"[équipes] maillots sombres ≈ {self.clf.centers[0][0]:.0f}, clairs ≈ {self.clf.centers[1][0]:.0f} "
+                     f"(seuil {self.lum_thr:.0f})")
         self.last_cluster = {}
         for d in dets:
-            lab = self.clf.predict(jersey_feature(frame, d["box"])) if self.clf_ready else UNK
+            f = feats.get(id(d))
+            lab = UNK
+            if self.clf_ready and f is not None:
+                L, red = f
+                margin = 0.22 * abs(self.clf.centers[1][0] - self.clf.centers[0][0])   # zone de doute
+                rt = self.red_team
+                if rt is not None and red > 0.3:
+                    lab = rt                                  # culotte rouge : jamais l'autre équipe
+                elif L < self.lum_thr - margin and not (rt == 1 and red > 0.15):
+                    lab = 0
+                elif L > self.lum_thr + margin and not (rt == 0 and red > 0.15):
+                    lab = 1
+            # maillot rayé (probable arbitre) : aucune équipe tant que le coach ne l'a pas désigné
+            if lab in (0, 1) and (d["box"][3] - d["box"][1]) >= 40 and d["tid"] not in self.manual_side \
+                    and referee_score(frame, d["box"], d.get("kp")) > 0.2:
+                lab = UNK
+                self.striped[d["tid"]] = self.striped.get(d["tid"], 0) + 1
             if d["tid"] >= 0:
-                lab = self.clf.vote(d["tid"], lab)
-            # arbitres : maillot rayé (et brassard) repéré grâce au squelette ; 3 images
-            # « rayées » sur une même piste suffisent, l'arbitre reste arbitre ensuite
-            t = d["tid"]
-            if t >= 0 and t not in self.manual_side and (d["box"][3] - d["box"][1]) >= 40:
-                if referee_score(frame, d["box"], d.get("kp")) > 0.3:
-                    self.ref_hits[t] = self.ref_hits.get(t, 0) + 1
-            if self.ref_hits.get(t, 0) >= 3:
+                c = self.team_votes.setdefault(d["tid"], Counter())
+                if lab in (0, 1):
+                    c[lab] += 1
+                if c:
+                    (best, nb), tot = c.most_common(1)[0], sum(c.values())
+                    lab = best if (nb >= 3 and nb / tot >= 0.7) else UNK
+                    if self.striped.get(d["tid"], 0) >= 3 and self.striped[d["tid"]] >= 0.3 * tot:
+                        lab = UNK                             # souvent rayé : on ne l'attribue pas
+            # arbitres : seulement ceux désignés à la main par le coach (« ⚑ Arbitre »)
+            if self.ref_hits.get(d["tid"], 0) >= 100:
                 lab = REF
             d["cluster"] = lab
             self.last_cluster[d["tid"]] = lab
-            d["side"] = self.cluster_side.get(lab) if lab in (0, 1) else None
-            if d["tid"] in self.manual_side:
-                d["side"] = self.manual_side[d["tid"]]
         self._resolve_sides()
+        for d in dets:
+            lab = d["cluster"]
+            d["side"] = self.cluster_side.get(lab) if lab in (0, 1) else None
+            if d["tid"] in self.manual_side:              # choix du coach : prioritaire
+                d["side"] = self.manual_side[d["tid"]]
 
         # --- mémoire du match : identités déjà connues pour cet instant (relecture)
         self._restore_from_memory(dets, now)
@@ -1363,13 +1414,7 @@ class Engine:
         cur = {s: self.shifts[s].current(game_t) for s in ("our", "them")}
         players = []
         for d in dets:
-            if d["cluster"] == REF:
-                if d.get("kp") is not None:
-                    x1, y1, x2, y2 = d["box"]
-                    players.append(dict(tid=int(d["tid"]), ref=True, side=None, num=None,
-                                        box=[round(x1 / W, 4), round(y1 / Hh, 4), round(x2 / W, 4), round(y2 / Hh, 4)],
-                                        kp=[[round(float(x) / W, 4), round(float(y) / Hh, 4)] if c > 0.35 else None
-                                            for x, y, c in d["kp"]]))
+            if d["cluster"] == REF:                     # arbitre désigné : exclu, rien n'est affiché
                 continue
             x1, y1, x2, y2 = d["box"]
             side, num = d["side"], d["num"]

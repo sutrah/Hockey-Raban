@@ -171,7 +171,7 @@
     const nowS = Date.now() / 1000;
     for (const k in shown) {                // position prédite : là où le squelette est dessiné
       const S = shown[k], p = S.p;
-      if (p.ref || nowS - S.seen > 0.6) continue;   // un arbitre ne s'identifie pas
+      if (nowS - S.seen > 0.6) continue;
       const dt = Math.min(Math.max(nowS - S.ts, 0), 0.6);
       let ox = p.v ? p.v[0] * dt : 0, oy = p.v ? p.v[1] * dt : 0;
       if (smooth[k]) { ox = smooth[k].x - (p.box[0] + p.box[2]) / 2; oy = smooth[k].y - p.box[3]; }   // là où il est dessiné
@@ -198,15 +198,21 @@
     const list = (side) => (roster ? roster[side] : []).map((p) =>
       `<label data-side="${side}" data-num="${p.num}"><b>${p.num}</b> ${p.name}
        <span style="color:${C.dim}">${p.pos || ""}</span></label>`).join("");
-    m.innerHTML = `<h4>${roster ? roster.names[focus] : ""} · qui est-ce ?${best.num ? ` (actuellement #${best.num})` : ""}</h4>
-      ${list(focus)}<label data-cancel="1" style="color:${C.dim}">✕ Annuler (Échap)</label>`;
+    m.innerHTML = best.ref
+      ? `<h4>Arbitre ?</h4><label data-notref="1">Ce n'est pas un arbitre</label>
+         <label data-cancel="1" style="color:${C.dim}">✕ Annuler (Échap)</label>`
+      : `<h4>${roster ? roster.names[focus] : ""} · qui est-ce ?${best.num ? ` (actuellement #${best.num})` : ""}</h4>
+      ${list(focus)}<label data-ref="1" style="color:#ddd">⚑ Arbitre</label>
+      <label data-cancel="1" style="color:${C.dim}">✕ Annuler (Échap)</label>`;
     m.style.left = Math.max(0, Math.min(clientX - r.left, r.width - 210)) + "px";
     m.style.top = "8px";
     m.classList.remove("hide");
     menuOpen = true;
     m.querySelectorAll("label").forEach((l) => l.onclick = (ev) => {
       ev.stopPropagation();
-      if (!l.dataset.cancel) send({ type: "assign", tid: best.tid, side: l.dataset.side, num: l.dataset.num, box: best.box });
+      if (l.dataset.ref) send({ type: "referee", tid: best.tid, is_ref: true });
+      else if (l.dataset.notref) send({ type: "referee", tid: best.tid, is_ref: false });
+      else if (!l.dataset.cancel) send({ type: "assign", tid: best.tid, side: l.dataset.side, num: l.dataset.num, box: best.box });
       closeMenu();
     });
   }
@@ -223,7 +229,7 @@
     const r = video.getBoundingClientRect();
     if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) return null;
     const p = playerAt({ clientX, clientY });
-    return p && p.side === focus && p.kp ? p : null;
+    return p && (p.side === focus || p.ref) && p.kp ? p : null;
   }
   for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
     window.addEventListener(type, (e) => {

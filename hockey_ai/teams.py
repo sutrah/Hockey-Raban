@@ -146,21 +146,26 @@ def _torso_crop(frame, box, kp=None, min_conf=0.4):
 
 def referee_score(frame, box, kp=None):
     """0..1 : probabilité que ce soit un arbitre (maillot rayé noir/blanc vertical,
-    brassard rouge/orange sur le haut du bras)."""
+    brassard rouge/orange sur le haut du bras).
+
+    Pièges évités : le filet de protection (mailles claires sur maillot noir, sombres sur
+    maillot blanc) est gommé ; un maillot noir avec numéro blanc reste globalement sombre ;
+    les bandes doivent avoir la largeur de rayures d'arbitre."""
     crop = _torso_crop(frame, box, kp)
     if crop is None:
         return 0.0
+    # filet : mailles fines claires (ouverture) et sombres (fermeture), à la résolution d'origine
+    k = np.ones((3, 3), np.uint8)
+    crop = cv2.morphologyEx(cv2.morphologyEx(crop, cv2.MORPH_OPEN, k), cv2.MORPH_CLOSE, k)
     s = 64.0 / crop.shape[1]
     crop = cv2.resize(crop, (64, max(8, int(crop.shape[0] * s))), interpolation=cv2.INTER_AREA)
-    crop = cv2.morphologyEx(crop, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))   # efface le filet
     lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB).astype(np.float32)
     L = lab[..., 0]
     chroma = np.hypot(lab[..., 1] - 128, lab[..., 2] - 128)
     if np.median(chroma) > 18:                  # maillot coloré : pas un arbitre
         return 0.0
-    # rayures verticales : profil horizontal dans 3 bandes (haut / milieu / bas du torse).
-    # Un arbitre : beaucoup d'alternances régulières, identiques dans les 3 bandes.
-    # Un numéro blanc sur maillot noir : peu d'alternances, seulement dans une bande.
+    if not (85 < L.mean() < 175):               # trop sombre (maillot noir + numéro) ou trop clair
+        return 0.0
     hgt = L.shape[0]
     if hgt < 9:
         return 0.0
@@ -168,20 +173,22 @@ def referee_score(frame, box, kp=None):
     prof = np.mean(bands, 0)
     lo, hi = np.percentile(prof, 10), np.percentile(prof, 90)
     contrast = hi - lo
-    if contrast < 45:                           # uni (noir ou blanc) : pas de rayures
+    if contrast < 50:
         return 0.0
     b = prof > (lo + hi) / 2
     edges = np.flatnonzero(b[1:] != b[:-1])
     trans = len(edges)
     dark = 1.0 - b.mean()
     stripes = 0.0
-    if trans >= 5 and 0.3 < dark < 0.7:
+    if trans >= 6 and 0.35 < dark < 0.65:
         runs = np.diff(edges)
-        regular = runs.std() / max(runs.mean(), 1e-6) < 0.6           # bandes de largeur régulière
+        mean_run = runs.mean()
+        regular = runs.std() / max(mean_run, 1e-6) < 0.5              # bandes de largeur régulière
+        width_ok = 64 / 16 <= mean_run <= 64 / 5                      # 5 à 16 bandes sur le torse
         cors = [np.corrcoef(bands[i], bands[j])[0, 1] for i, j in ((0, 1), (1, 2), (0, 2))]
-        vertical = np.nanmin(cors) > 0.5                              # de haut en bas du torse
-        if regular and vertical:
-            stripes = min(1.0, 0.2 * (trans - 3)) * min(1.0, contrast / 90.0)
+        vertical = np.nanmin(cors) > 0.6                              # de haut en bas du torse
+        if regular and width_ok and vertical:
+            stripes = min(1.0, 0.2 * (trans - 4)) * min(1.0, contrast / 90.0)
     # brassard : rouge/orange sur le haut d'un bras
     band = 0.0
     if kp is not None:
@@ -198,3 +205,59 @@ def referee_score(frame, box, kp=None):
                     red = ((la[..., 1] - 128) > 25).mean()
                     band = max(band, min(1.0, red / 0.2))
     return float(min(1.0, stripes + 0.4 * band * (stripes > 0.2)))
+
+
+# ------------------------------------------------------------- équipes (règles)
+def kit_features(frame, box, kp=None):
+    """(luminosité moyenne du torse, part de rouge sur la culotte) ou None.
+    Torse cadré par le squelette, filet gommé ; culotte entre hanches et genoux."""
+    crop = _torso_crop(frame, box, kp)
+    if crop is None:
+        return None
+    # filet : filtre médian (efface les mailles d'1 pixel, claires ou sombres, sans effacer
+    # des rayures de 2 pixels ou plus)
+    crop = cv2.medianBlur(crop, 3)
+    lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB).astype(np.int16)
+    # moyenne (et non médiane) : un maillot rayé noir/blanc tombe au milieu, donc dans la
+    # zone de doute, au lieu de basculer au hasard côté noir ou côté blanc
+    torso_L = float(lab[..., 0].mean())
+    x1, y1, x2, y2 = [float(v) for v in box]
+    w, h = x2 - x1, y2 - y1
+    if kp is not None and kp[11, 2] > 0.4 and kp[12, 2] > 0.4:
+        hy = (kp[11, 1] + kp[12, 1]) / 2
+        if kp[13, 2] > 0.4 and kp[14, 2] > 0.4:
+            ky = (kp[13, 1] + kp[14, 1]) / 2
+        else:
+            ky = hy + 0.2 * h
+        px1, px2 = min(kp[11, 0], kp[12, 0]) - 0.1 * w, max(kp[11, 0], kp[12, 0]) + 0.1 * w
+        py1, py2 = hy, hy + 0.8 * (ky - hy)
+    else:
+        px1, px2, py1, py2 = x1 + 0.25 * w, x2 - 0.25 * w, y1 + 0.52 * h, y1 + 0.68 * h
+    H, W = frame.shape[:2]
+    px1, py1, px2, py2 = int(max(0, px1)), int(max(0, py1)), int(min(W, px2)), int(min(H, py2))
+    red = 0.0
+    if px2 - px1 > 3 and py2 - py1 > 3:
+        pl = cv2.cvtColor(frame[py1:py2, px1:px2], cv2.COLOR_BGR2LAB).astype(np.int16)
+        red = float((((pl[..., 1] - 128) > 22) & (pl[..., 0] > 40)).mean())
+    return torso_L, red
+
+
+def otsu_threshold(values, default=110.0):
+    """Seuil séparant deux groupes de luminosités (maillots sombres / clairs)."""
+    v = np.asarray(values, float)
+    if len(v) < 20:
+        return default
+    hist, edges = np.histogram(v, bins=64, range=(0, 255))
+    cen = (edges[:-1] + edges[1:]) / 2
+    best, thr = -1, default
+    w0 = np.cumsum(hist)
+    m0 = np.cumsum(hist * cen)
+    tot, mt = w0[-1], m0[-1]
+    for i in range(1, 63):
+        if w0[i] == 0 or w0[i] == tot:
+            continue
+        mu0, mu1 = m0[i] / w0[i], (mt - m0[i]) / (tot - w0[i])
+        between = w0[i] * (tot - w0[i]) * (mu0 - mu1) ** 2
+        if between > best:
+            best, thr = between, cen[i]
+    return float(thr)

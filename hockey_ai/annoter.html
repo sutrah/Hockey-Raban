@@ -119,7 +119,9 @@
     img.onload = () => { fit(); render(); };
     img.src = "/img/" + fr.file;
     $("pos").textContent = `${idx + 1} / ${frames.length}`;
-    const tc = fr.tc ? `temps de jeu ${Math.floor(fr.tc[0] / 60)}:${String(Math.floor(fr.tc[0] % 60)).padStart(2, "0")}` : "pas de time code (bandeau non lu)";
+    const band = (gs) => { const p = Math.floor(gs / 1200) + 1, rem = Math.max(0, 1200 - (gs - (p - 1) * 1200));
+      return `P${p} ${Math.floor(rem / 60)}:${String(Math.floor(rem % 60)).padStart(2, "0")}`; };
+    const tc = fr.tc ? `bandeau ${band(fr.tc[0])}` : "pas de chrono (bandeau non lu)";
     $("tc").textContent = `· ${tc} · t=${fr.t}s`;
     hideMenu();
   }

@@ -32,6 +32,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 8766
 
 
+def bandeau(game_s, period_len=1200):
+    """Temps de jeu écoulé -> chrono du bandeau, ex. 'P1 17:51' (le chrono décompte)."""
+    p = int(game_s // period_len) + 1
+    rem = max(0, period_len - (game_s - (p - 1) * period_len))
+    return f"P{p} {int(rem // 60)}:{int(rem % 60):02d}"
+
+
 def latest_session():
     ds = sorted(glob.glob(os.path.join(HERE, "annotations", "*", "*")), key=os.path.getmtime)
     ds = [d for d in ds if os.path.exists(os.path.join(d, "frames.json"))]
@@ -240,6 +247,12 @@ def main():
         raise SystemExit("Aucune capture : lance d'abord  py live_engine.py --match <n°> --annoter 180")
     sess = Session(folder)
     print(f"[annoter] {len(sess.frames)} images dans {folder}")
+    tcs = [fr["tc"][0] for fr in sess.frames if fr.get("tc")]
+    if tcs:
+        print(f"[annoter] extrait du match (chrono du bandeau) : de {bandeau(min(tcs))} à {bandeau(max(tcs))} "
+              f"- c'est ce passage qu'il faut revoir pour retrouver tes noms")
+    else:
+        print("[annoter] pas de chrono lu pendant la capture : la mémoire du match ne pourra pas être recalée")
     if args.exporter:
         sess.export()
         return

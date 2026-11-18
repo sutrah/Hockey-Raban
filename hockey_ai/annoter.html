@@ -119,7 +119,9 @@
     img.onload = () => { fit(); render(); };
     img.src = "/img/" + fr.file;
     $("pos").textContent = `${idx + 1} / ${frames.length}`;
-    const tc = fr.tc ? `temps de jeu ${Math.floor(fr.tc[0] / 60)}:${String(Math.floor(fr.tc[0] % 60)).padStart(2, "0")}` : "pas de time code (bandeau non lu)";
+    const band = (gs) => { const p = Math.floor(gs / 1200) + 1, rem = Math.max(0, 1200 - (gs - (p - 1) * 1200));
+      return `P${p} ${Math.floor(rem / 60)}:${String(Math.floor(rem % 60)).padStart(2, "0")}`; };
+    const tc = fr.tc ? `bandeau ${band(fr.tc[0])}` : "pas de chrono (bandeau non lu)";
     $("tc").textContent = `· ${tc} · t=${fr.t}s`;
     hideMenu();
   }
@@ -264,9 +266,16 @@
   $("prev").onclick = () => { idx = Math.max(0, idx - 1); load(); };
   $("next").onclick = () => { idx = Math.min(frames.length - 1, idx + 1); load(); };
   $("export").onclick = async () => {
-    $("msg").textContent = "Export en cours…";
-    const r = await (await fetch("/api/export", { method: "POST", body: JSON.stringify(labels) })).json();
-    $("msg").textContent = r.msg || "Exporté";
+    $("msg").style.color = "";
+    $("msg").textContent = "Export en cours… (si rien ne bouge, clique dans la fenêtre du terminal et appuie sur Échap)";
+    try {
+      const r = await (await fetch("/api/export", { method: "POST", body: JSON.stringify(labels) })).json();
+      $("msg").textContent = r.msg || "Exporté";
+      if (!r.ok) $("msg").style.color = "#ff6b6b";
+    } catch (e) {
+      $("msg").style.color = "#ff6b6b";
+      $("msg").textContent = "L'export n'a pas répondu : regarde le message dans le terminal (" + e + ")";
+    }
   };
   window.addEventListener("resize", () => { fit(); render(); });
   sidebar(); load();

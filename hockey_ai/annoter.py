@@ -32,6 +32,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 8766
 
 
+def bandeau(game_s, period_len=1200):
+    """Temps de jeu écoulé -> chrono du bandeau, ex. 'P1 17:51' (le chrono décompte)."""
+    p = int(game_s // period_len) + 1
+    rem = max(0, period_len - (game_s - (p - 1) * period_len))
+    return f"P{p} {int(rem // 60)}:{int(rem % 60):02d}"
+
+
 def latest_session():
     ds = sorted(glob.glob(os.path.join(HERE, "annotations", "*", "*")), key=os.path.getmtime)
     ds = [d for d in ds if os.path.exists(os.path.join(d, "frames.json"))]
@@ -89,7 +96,7 @@ class Session:
         return out
 
     # ------------------------------------------------------------------ export
-    def export(self, log=print):
+    def export(self, log=lambda m: print(m, flush=True)):
         res = self.resolved()
         abbr = {}
         m = self.meta.get("match")
@@ -130,7 +137,10 @@ class Session:
         os.makedirs(det_img, exist_ok=True)
         os.makedirs(det_lab, exist_ok=True)
         tag = os.path.basename(os.path.dirname(self.folder)) + "_" + os.path.basename(self.folder)
-        for fr in self.frames:
+        log(f"[export] mémoire du match : {n_mem} identités ; écriture des vignettes…")
+        for k, fr in enumerate(self.frames):
+            if k % 20 == 0:
+                log(f"[export] image {k + 1}/{len(self.frames)}")
             img = cv2.imread(os.path.join(self.folder, fr["file"]))
             if img is None:
                 continue
@@ -147,12 +157,15 @@ class Session:
                 if lab is None:
                     continue                      # personne non annotée (public, doute) : ignorée
                 if lab.get("off"):
-                    continue                      # marquée « pas un joueur »
+                    continue
                 boxes.append((x1, y1, x2, y2))
                 crop = img[max(0, y1):y2, max(0, x1):x2]
                 if crop.size == 0 or (y2 - y1) < 30:
                     continue
-                team = "ARB" if lab.get("ref") else abbr.get(lab.get("side"), lab.get("side") or "?")
+                if not lab.get("ref") and lab.get("side") not in ("our", "them"):
+                    continue                      # cadre tracé sans nom : sert à la détection seulement
+                team = "ARB" if lab.get("ref") else abbr.get(lab["side"], "EQUIPE_" + lab["side"])
+                team = "".join(ch for ch in team if ch.isalnum() or ch in "-_") or "EQUIPE"
                 name = f"{tag}_{fr['file'][:-4]}_{x1}_{y1}.jpg"
                 dteam = os.path.join(HERE, "dataset_equipes", team)
                 os.makedirs(dteam, exist_ok=True)
@@ -210,10 +223,15 @@ def make_handler(sess):
                 sess.save(body)
                 return self._send(200, b'{"ok":true}', "application/json")
             if self.path == "/api/export":
-                sess.save(body)
-                msg = sess.export()
-                return self._send(200, json.dumps({"ok": True, "msg": msg}, ensure_ascii=False).encode("utf-8"),
-                                  "application/json")
+                try:
+                    sess.save(body)
+                    msg = sess.export()
+                    out = {"ok": True, "msg": msg}
+                except Exception as ex:                  # l'erreur s'affiche sur la page (pas de blocage)
+                    import traceback
+                    traceback.print_exc()
+                    out = {"ok": False, "msg": f"Erreur pendant l'export : {ex!r} (détail dans le terminal)"}
+                return self._send(200, json.dumps(out, ensure_ascii=False).encode("utf-8"), "application/json")
             return self._send(404, b"{}", "application/json")
     return H
 
@@ -229,6 +247,12 @@ def main():
         raise SystemExit("Aucune capture : lance d'abord  py live_engine.py --match <n°> --annoter 180")
     sess = Session(folder)
     print(f"[annoter] {len(sess.frames)} images dans {folder}")
+    tcs = [fr["tc"][0] for fr in sess.frames if fr.get("tc")]
+    if tcs:
+        print(f"[annoter] extrait du match (chrono du bandeau) : de {bandeau(min(tcs))} à {bandeau(max(tcs))} "
+              f"- c'est ce passage qu'il faut revoir pour retrouver tes noms")
+    else:
+        print("[annoter] pas de chrono lu pendant la capture : la mémoire du match ne pourra pas être recalée")
     if args.exporter:
         sess.export()
         return

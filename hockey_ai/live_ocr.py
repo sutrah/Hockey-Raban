@@ -114,7 +114,7 @@ class Scoreboard:
             return
         if now < self.next_read:
             return
-        self.next_read = now + 1.0
+        self.next_read = now + 0.25        # 4 lectures/s : repère temporel précis pour la mémoire du match
         x1, y1, x2, y2 = self.box
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
@@ -134,7 +134,7 @@ class Scoreboard:
             return
         if self.remaining is not None and rem != self.remaining:
             self.last_change = now
-        self.running = (now - self.last_change) < 2.5
+        self.running = (now - self.last_change) < 1.6
         # nouvelle période : le chrono remonte
         if self.remaining is not None and rem > self.remaining + 60 and self.period:
             self.period += 1

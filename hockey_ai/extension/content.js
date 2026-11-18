@@ -377,7 +377,7 @@
       }
       const col = p.side ? C[p.side] : "rgba(255,255,255,.6)";
       // squelette : épaisseur plus forte en mode identification et pour le joueur survolé
-      if (p.kp && (p.side === focus || picking)) {
+      if (p.kp && (p.side === focus || !p.side || picking)) {   // gris si l'équipe n'est pas encore connue
         const dx = (x1 - p.box[0]) * W, dy = (y1 - p.box[1]) * H;
         const hot = picking && hover === p.tid;
         ctx.strokeStyle = col; ctx.globalAlpha = p.side === focus ? (hot ? 1 : 0.75) : 0.35;

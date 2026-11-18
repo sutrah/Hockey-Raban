@@ -29,6 +29,7 @@ import numpy as np
 from autocalib import AutoCameraTracker, estimate_camera_center
 from live_capture import FileSource, ScreenSource, static_mask_from_frames
 from live_ocr import NumberVotes, Scoreboard, Worker, back_crop, pose_crops, read_number
+from live_memory import MatchMemory, tc_key
 from live_state import Kin, Pressure, Recorder, Shifts
 from rink import PRESETS, Rink
 from teams import REF, UNK, TeamClassifier, jersey_feature, referee_score
@@ -290,6 +291,11 @@ class Engine:
         if self.match:
             name += f"_{self.match.abbr['home']}-{self.match.abbr['away']}"
         self.rec = Recorder(os.path.join(HERE, "matchs"), name)
+        # mémoire du match (identités par instant de jeu), partagée entre tous les visionnages
+        mid = str(self.a.match or (os.path.splitext(os.path.basename(self.a.match_json))[0] if self.a.match_json
+                                   else getattr(self.feed, "mid", name)))
+        self.memory = MatchMemory(os.path.join(HERE, "matchs", f"memoire_{mid}.json"), self.log)
+        self.mem_key = None
         self.last_score = None
         self.calib_t = 0.0
         self.last_cluster = {}
@@ -497,6 +503,15 @@ class Engine:
                 self.votes.manual[int(tid)] = num
                 self.manual_side[int(tid)] = side
                 self.validated[int(tid)] = (side, num)
+                for t in list(self.votes.manual):        # la dernière identification à la main l'emporte
+                    if t != int(tid) and self.votes.manual[t] == num and self.manual_side.get(t) == side:
+                        self.votes.manual.pop(t, None); self.manual_side.pop(t, None); self.validated.pop(t, None)
+                for t, k in list(self.validated.items()):
+                    if t != int(tid) and k == (side, num):
+                        self.validated.pop(t, None)
+                n = self.memory.correct_track(int(tid), side, num)
+                if n:
+                    self.log(f"[mémoire] séquence précédente du joueur corrigée ({n} instants)")
                 info = self._roster(side).get(num, {})
                 self.log(f"[clic] {self._name(side)} #{num} {info.get('short', '')} attribué")
                 cl = self.last_cluster.get(int(tid))
@@ -539,7 +554,90 @@ class Engine:
                     self.sb.update(f)
                 except Exception as ex:
                     self.log(f"[bandeau] erreur de lecture : {ex}")
-            time.sleep(0.5)
+            time.sleep(0.08)
+
+    def timecode(self, now):
+        """(temps de jeu, fraction, arrêt) d'après le chrono du bandeau, ou None."""
+        gs = self.sb.game_seconds
+        if gs is None or not self.sb.box:
+            return None
+        since = now - (self.sb.last_change or now)
+        if self.sb.running:
+            return gs, min(max(since, 0.0), 0.99), None
+        return gs, 0.0, since
+
+    def _restore_from_memory(self, dets, now):
+        """Remet les identités enregistrées pour cet instant (relecture du même match)."""
+        tc = self.timecode(now)
+        if tc is None or not self.memory.frames:
+            return
+        entries = self.memory.lookup(*tc)
+        if not entries:
+            return
+        W, Hh = self.size
+        session_manual = {(self.manual_side.get(t), n) for t, n in self.votes.manual.items()}
+        pts = []
+        for d in dets:
+            if d["tid"] < 0 or d["tid"] in self.votes.manual or d["cluster"] == REF:
+                continue
+            x1, y1, x2, y2 = d["box"]
+            pts.append((d, ((x1 + x2) / 2 / W, y2 / Hh), (y2 - y1) / Hh))
+        # regroupe les entrées par identité, garde la meilleure (main récente > auto)
+        by_id = {}
+        for en in entries:
+            if en[1]:                                    # entrées sans nom : ignorées
+                by_id.setdefault((en[0], en[1]), []).append(en)
+        cands = []
+        for ident, ens in by_id.items():
+            if ident in session_manual:                  # déjà fixé à la main dans cette séance
+                continue
+            en = MatchMemory.best_identity(ens)
+            for d, (x, y), h in pts:
+                if d["side"] and d["side"] != en[0]:
+                    continue
+                dist = np.hypot(x - en[2], y - en[3])
+                if dist < max(0.6 * h, 0.015):
+                    cands.append((dist, ident, en, d))
+        used_id, used_det = set(), set()
+        # main avant auto ; entre deux identifications à la main, la plus récente l'emporte
+        for dist, ident, en, d in sorted(cands, key=lambda c: (c[2][5] != "main", -c[2][6], c[0])):
+            if ident in used_id or d["tid"] in used_det:
+                continue
+            cur = self.validated.get(d["tid"])
+            if cur == ident:
+                used_id.add(ident); used_det.add(d["tid"])
+                continue
+            if cur is not None and en[5] != "main":
+                continue                                 # une identité auto n'écrase rien
+            used_id.add(ident); used_det.add(d["tid"])
+            side, num = ident
+            self.validated[d["tid"]] = (side, num)
+            if en[5] == "main":
+                self.votes.manual[d["tid"]] = num
+                self.manual_side[d["tid"]] = side
+            for t, k in list(self.validated.items()):    # un numéro, un seul joueur
+                if t != d["tid"] and k == ident and t not in self.votes.manual:
+                    self.validated.pop(t, None)
+
+    def _record_memory(self, dets, now):
+        tc = self.timecode(now)
+        if tc is None:
+            return
+        key = tc_key(*tc)
+        if key == self.mem_key:
+            return
+        self.mem_key = key
+        W, Hh = self.size
+        entries = []
+        for d in dets:
+            # tous les joueurs suivis, même sans nom : un clic plus tard remplira leur passé
+            if d.get("side") and d["tid"] >= 0 and d.get("cluster") != REF:
+                x1, y1, x2, y2 = d["box"]
+                num = d.get("num")
+                src = "main" if d["tid"] in self.votes.manual else ("auto" if num else "?")
+                entries.append((d["side"], num, (x1 + x2) / 2 / W, y2 / Hh, (y2 - y1) / Hh, src, int(d["tid"])))
+        if entries:
+            self.memory.record(key, entries)
 
     # ------------------------------------------------------------ temps de jeu
     def game_time(self, now, dtw):
@@ -668,6 +766,8 @@ class Engine:
                 d["side"] = self.manual_side[d["tid"]]
         self._resolve_sides()
 
+        # --- mémoire du match : identités déjà connues pour cet instant (relecture)
+        self._restore_from_memory(dets, now)
         # --- numéros
         self._read_numbers(frame, dets, now)
         for d in dets:
@@ -685,6 +785,7 @@ class Engine:
                     if d["tid"] in self.votes.manual or (conf >= 0.85 and n >= 4 and avg >= 0.6):
                         self.validated[d["tid"]] = (d["side"], num)      # validé : plus de lecture
 
+        self._record_memory(dets, now)
         if self.a.collecte:
             self._collect(frame, dets, now)
 
@@ -1241,6 +1342,10 @@ class Engine:
         return msg
 
     def save(self, force=False):
+        try:
+            self.memory.save(force)
+        except Exception as ex:
+            self.log(f"[mémoire] écriture impossible : {ex}")
         players = {}
         for (side, num), k in self.kin.items():
             if not num:

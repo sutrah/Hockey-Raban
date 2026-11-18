@@ -17,6 +17,8 @@ Toutes les données viennent des feuilles de match publiées par la FFHG et tien
   `visuels.js` (graphiques), `pages.js` (pages et navigation).
 - `scrape.py` : télécharge les matchs joués depuis hockeyfrance.com vers `data/raw/`.
 - `build_db.py` : reconstruit `docs/data/d2.sqlite` à partir de `data/raw/`.
+- `hockey_ai/` : analyse tactique d'une vidéo de match (suivi des joueurs, équipes, vue tactique,
+  stats). Tout est automatique : `python hockey_analytics.py match.mp4` (voir `hockey_ai/README.md`).
 
 Chaque encart porte un badge : « mesuré » (compté sur les feuilles), « partiel » (saisi sur une partie des
 matchs), « déduit » (calculé par recoupement).

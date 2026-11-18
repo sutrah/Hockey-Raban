@@ -207,36 +207,60 @@ def read_number(crop):
 
 
 class NumberVotes:
-    """Votes par piste de suivi, contraints par la feuille de match."""
+    """Votes par piste de suivi, contraints par la feuille de match.
+
+    Prudence sur les numéros à un chiffre : une lecture partielle d'un numéro à deux
+    chiffres (« 5 » pour « 53 ») ressemble à un numéro à un chiffre. Il faut donc plus
+    de lectures concordantes, et aucune lecture d'un numéro à deux chiffres qui le contient."""
+
+    MIN_CONF = 0.5
 
     def __init__(self):
         self.votes = defaultdict(Counter)       # tid -> Counter(numéro -> poids)
+        self.reads = defaultdict(Counter)       # tid -> Counter(numéro -> nombre de lectures)
+        self.raw2 = defaultdict(Counter)        # tid -> numéros à 2 chiffres lus (même hors feuille)
         self.manual = {}                        # tid -> numéro fixé par le coach
 
     def add(self, tid, readings, allowed=None):
-        for num, conf in readings:
+        best = {}
+        for num, conf in readings:              # une lecture = un dos, quelles que soient les variantes
+            if conf < self.MIN_CONF:
+                continue
+            if len(num) == 2:
+                self.raw2[tid][num] += 1
             if allowed is not None and num not in allowed:
-                # tolère une erreur d'un chiffre (ex. 23 lu au lieu de 33)
-                close = [a for a in allowed if len(a) == len(num) and sum(x != y for x, y in zip(a, num)) == 1]
+                if len(num) != 2:               # pas de correction pour un seul chiffre
+                    continue
+                # tolère une erreur d'un chiffre sur 2 (ex. 23 lu au lieu de 33)
+                close = [a for a in allowed if len(a) == 2 and sum(x != y for x, y in zip(a, num)) == 1]
                 if len(close) != 1:
                     continue
                 num, conf = close[0], conf * 0.5
+            best[num] = max(best.get(num, 0.0), conf)
+        for num, conf in best.items():
             self.votes[tid][num] += conf
+            self.reads[tid][num] += 1
 
-    def get(self, tid, min_votes=1.2, ratio=0.6):
+    def get(self, tid, min_votes=1.2, ratio=0.65):
         if tid in self.manual:
             return self.manual[tid], 1.0
         c = self.votes.get(tid)
         if not c:
             return None, 0.0
         (num, v), tot = c.most_common(1)[0], sum(c.values())
+        n = self.reads[tid][num]
+        if len(num) == 1:
+            if n < 3 or any(num in k for k in self.raw2[tid]):
+                return None, v / tot
+        elif n < 2:
+            return None, v / tot
         if v >= min_votes and v / tot >= ratio:
             return num, v / tot
         return None, v / tot
 
     def forget(self, tid):
-        self.votes.pop(tid, None)
-        self.manual.pop(tid, None)
+        for d in (self.votes, self.reads, self.raw2, self.manual):
+            d.pop(tid, None)
 
 
 class Worker(threading.Thread):

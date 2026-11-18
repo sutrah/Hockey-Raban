@@ -552,7 +552,17 @@ class Engine:
             self.ref_hits[tid] = 1000 if msg.get("is_ref") else -10000
             if msg.get("is_ref"):
                 self.validated.pop(tid, None); self.votes.manual.pop(tid, None); self.manual_side.pop(tid, None)
-            self.log(f"[arbitres] piste {tid} : {'arbitre' if msg.get('is_ref') else 'pas un arbitre'} (à la main)")
+            what = "pas un joueur (exclu)" if msg.get("off") else ("arbitre" if msg.get("is_ref") else "pas un arbitre")
+            self.log(f"[clic] piste {tid} : {what}")
+        elif t == "team":                      # équipe choisie à la main, sans numéro
+            tid, side = int(msg.get("tid")), msg.get("side")
+            if side in ("our", "them"):
+                self.manual_side[tid] = side
+                self.ref_hits[tid] = -10000
+                self.votes.manual.pop(tid, None)
+                if self.validated.get(tid, (None,))[0] != side:
+                    self.validated.pop(tid, None)
+                self.log(f"[clic] piste {tid} : joueur {self._name(side)} (numéro inconnu)")
         elif t == "assign":                    # le coach a cliqué un joueur et choisi son nom
             tid, side, num = msg.get("tid"), msg.get("side"), str(msg.get("num"))
             if tid is not None:
@@ -919,7 +929,8 @@ class Engine:
             wp = cv2.perspectiveTransform(feet, H).reshape(-1, 2)
             for d, (x, y) in zip(dets, wp):
                 d["world"] = (float(x), float(y)) if self.rink.inside(x, y, 1.5) else None
-        self._detect_goalies(dets, now, game_t)
+        if self.a.cages_auto:                             # gardiens d'après la patinoire repérée (option)
+            self._detect_goalies(dets, now, game_t)
         self._track_cages(frame)
         self._goalies_from_manual_cages(dets, now, game_t)
         self._persist_ids(dets, now)
@@ -1653,9 +1664,7 @@ class Engine:
             k = d.get("kin")
             p = dict(tid=int(d["tid"]), box=[round(x1 / W, 4), round(y1 / Hh, 4), round(x2 / W, 4), round(y2 / Hh, 4)],
                      side=side, num=num, goalie=bool(d.get("goalie")))
-            kp = d.get("kp")
-            if kp is not None:
-                p["kp"] = [[round(float(x) / W, 4), round(float(y) / Hh, 4)] if c > 0.35 else None for x, y, c in kp]
+            # (le squelette sert au calcul - torse, dos - mais n'est plus envoyé à l'overlay)
             hist = self.track_hist.get(d["tid"])
             if hist and len(hist) >= 3:                  # vitesse à l'écran (fraction d'image / s)
                 (t0, c0), (t1, c1) = hist[max(0, len(hist) - 3)], hist[-1]
@@ -1677,7 +1686,7 @@ class Engine:
         msg = dict(type="state", mode=self.mode, focus=self.focus, fps=round(self.fps, 1), paused=self.paused,
                    ts=round(self.cap_ts, 3),
                    cages=([[[round(x / W, 4), round(y / Hh, 4)] for x, y in cg["pts"]] + [[round(cg["pts"][0][0] / W, 4), round(cg["pts"][0][1] / Hh, 4)]]
-                           for cg in self.manual_cages] or self.cages_px(self._last_H)),
+                           for cg in self.manual_cages] or (self.cages_px(self._last_H) if self.a.cages_auto else None)),
                    status=dict(calib=self.calib_state if self.cam is None else ("ok" if calibrated else "perdu"),
                                match=(f"{self.match.short['home']} / {self.match.short['away']}" if self.match else None),
                                sides=len(self.cluster_side) == 2, colors=self.clf_ready,
@@ -1770,6 +1779,9 @@ def main():
     ap.add_argument("--annoter", type=float, default=0, metavar="SECONDES",
                     help="enregistre une image toutes les 1,5 s pendant SECONDES (avec time code et joueurs "
                          "détectés) pour les annoter ensuite avec annoter.py")
+    ap.add_argument("--cages-auto", action="store_true",
+                    help="cages calculées d'après la patinoire repérée (par défaut : seulement les cages "
+                         "tracées à la main avec le bouton « Cage »)")
     ap.add_argument("--apercu", action="store_true",
                     help="diagnostic : écrit apercu_capture.jpg (ce que voit le moteur) toutes les 10 s")
     ap.add_argument("--gt", default=None, help=argparse.SUPPRESS)

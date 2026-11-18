@@ -50,6 +50,8 @@
   <div>Clique un joueur encadré et choisis son nom. Le nom se propage aux autres images du même
     joueur (<b>pointillé</b> = proposé) : corrige seulement ce qui est faux.</div>
   <div style="margin-top:6px">Joueur oublié : <b>trace un cadre</b> autour de lui en glissant la souris.</div>
+  <div style="margin-top:6px">Faux positif (public, reflet, poteau…) : survole le cadre et appuie sur <kbd>X</kbd>
+    (ou « ✕ Pas un joueur ») : il est écarté sur toutes les images de la même piste.</div>
   <div style="margin-top:6px"><kbd>←</kbd> <kbd>→</kbd> changer d'image · <kbd>Suppr</kbd> effacer l'étiquette survolée ·
     enregistrement automatique.</div>
   <h3>LÉGENDE</h3>
@@ -246,6 +248,12 @@
     if (e.key === "ArrowRight" || e.key === "d") { idx = Math.min(frames.length - 1, idx + 1); load(); }
     if (e.key === "ArrowLeft" || e.key === "a") { idx = Math.max(0, idx - 1); load(); }
     if (e.key === "Escape") hideMenu();
+    if ((e.key === "x" || e.key === "X") && hover) {     // X : faux positif (pas un joueur)
+      const fr = frames[idx];
+      if (hover.kind === "det") { labels.explicit[fr.file] = labels.explicit[fr.file] || {}; labels.explicit[fr.file][hover.tid] = { off: true }; }
+      else { const arr = labels.extra[fr.file] || []; arr.splice(hover.k, 1); labels.extra[fr.file] = arr; }
+      save();
+    }
     if ((e.key === "Delete" || e.key === "Backspace") && hover) {
       const fr = frames[idx];
       if (hover.kind === "det") { if (labels.explicit[fr.file]) delete labels.explicit[fr.file][hover.tid]; }

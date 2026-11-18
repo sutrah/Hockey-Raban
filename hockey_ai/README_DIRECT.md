@@ -15,11 +15,11 @@ l'image affichée à l'écran, et une extension dessine les infos **par-dessus l
    puis le reste :
 
    ```bash
-   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+   py -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
    ```
 
    ```bash
-   pip install -r requirements.txt
+   py -m pip install -r requirements.txt
    ```
 
 3. Installe l'extension dans Chrome ou Edge :
@@ -70,7 +70,7 @@ Le replay FFHG TV fonctionne exactement comme le direct. Comme ce n'est pas le m
 donne le numéro du match (il est dans l'adresse de la page FFHG, `.../rencontre/84389/`) :
 
 ```bash
-python live_engine.py --match 84389
+py live_engine.py --match 84389
 ```
 
 ## Limites à connaître

@@ -296,7 +296,11 @@ class Engine:
                                    else getattr(self.feed, "mid", name)))
         self.memory = MatchMemory(os.path.join(HERE, "matchs", f"memoire_{mid}.json"), self.log)
         self.mem_key = None
-        self.mem_votes = {}
+        self.off_tids = set()        # pistes « pas un joueur » (masquées)
+        self.click_tids = set()      # pistes nommées par un clic pendant CETTE séance (priorité absolue)
+        self.mem_hist = {}           # clé d'instant -> {tid: (x, y, h, camp)} (trajet récent)
+        self.mem_prev_key = None
+        self.mem_done = set()        # images annotées déjà utilisées pendant ce passage
         self.mem_restored = 0
         self.last_score = None
         self.calib_t = 0.0
@@ -554,6 +558,10 @@ class Engine:
             self.ref_hits[tid] = 1000 if msg.get("is_ref") else -10000
             if msg.get("is_ref"):
                 self.validated.pop(tid, None); self.votes.manual.pop(tid, None); self.manual_side.pop(tid, None)
+            if msg.get("off"):
+                self.off_tids.add(tid)                 # pas un joueur : masqué
+            else:
+                self.off_tids.discard(tid)             # arbitre : encadré vert
             what = "pas un joueur (exclu)" if msg.get("off") else ("arbitre" if msg.get("is_ref") else "pas un arbitre")
             self.log(f"[clic] piste {tid} : {what}")
         elif t == "team":                      # équipe choisie à la main, sans numéro
@@ -570,6 +578,7 @@ class Engine:
             if tid is not None:
                 self.ref_hits[int(tid)] = -10000     # nommé comme joueur : jamais arbitre
             if tid is not None:
+                self.click_tids.add(int(tid))
                 self.votes.manual[int(tid)] = num
                 self.manual_side[int(tid)] = side
                 self.validated[int(tid)] = (side, num)
@@ -637,79 +646,113 @@ class Engine:
         return gs, 0.0, since
 
     def _restore_from_memory(self, dets, now):
-        """Remet les identités enregistrées (annotation, clics des visionnages précédents).
+        """Remet les identités faites à la main (annotation, clics des visionnages précédents).
 
-        1. recalage dans le temps : on essaie les décalages de -1 s à +1 s autour du chrono lu
-           et on garde celui où la disposition des joueurs colle le mieux ;
-        2. association globale (tous les joueurs à la fois), refus des cas ambigus ;
-        3. un nom n'est posé (ou changé) qu'après 2 confirmations concordantes."""
+        Les images annotées sont espacées (1,5 s) : on ne compare pas la position actuelle des
+        joueurs, mais leur position AU MÊME INSTANT DE JEU que l'image annotée (trajet récent de
+        chaque piste, au quart de seconde). Association globale, refus des cas ambigus, un nom
+        posé après confirmation."""
         tc = self.timecode(now)
         if tc is None or not self.memory.frames:
             return
-        from scipy.optimize import linear_sum_assignment
-        from live_memory import Q
         W, Hh = self.size
-        pts = []
+        key = tc_key(*tc)
+        if self.mem_prev_key is not None and abs(int(key.split("s")[0]) - int(self.mem_prev_key.split("s")[0])) > 8:
+            self.mem_done.clear()                         # saut dans la vidéo (retour en arrière…)
+            self.mem_hist.clear()
+            self.mem_prev_key = None
+        if self.mem_prev_key is not None and key != self.mem_prev_key:
+            p = self.mem_prev_key                         # instant terminé : trajet complet
+            if "s" in p:
+                self._restore_at(p, [p])
+            else:                                         # image annotée juste avant, une seule fois,
+                k = str(int(p) - 1)                       # avec l'instant voisin qui colle le mieux
+                self._restore_at(k, [k, p, str(int(p) - 2)])
+        self.mem_prev_key = key
+        snap = self.mem_hist.setdefault(key, {})
         for d in dets:
-            if d["tid"] < 0 or d["tid"] in self.votes.manual or d["cluster"] == REF:
+            if d["tid"] < 0 or d.get("cluster") == REF or not d.get("side"):
                 continue
             x1, y1, x2, y2 = d["box"]
-            pts.append((d, np.array([(x1 + x2) / 2 / W, y2 / Hh]), max((y2 - y1) / Hh, 0.02)))
-        if not pts:
-            return
-        session_manual = {(self.manual_side.get(t), n) for t, n in self.votes.manual.items()}
-        gs, frac, stop = tc
-        base = int(round((gs + frac) * Q))
-        suffix = "s" + str(int(stop * 2)) if (stop is not None and stop > 0.6) else ""
-        best = None
-        for off in range(-4, 5):
-            ens = self.memory.frames.get(str(base + off) + suffix, [])
-            by_id = {}
-            for en in ens:
-                if en[1] and (en[0], en[1]) not in session_manual:
-                    by_id.setdefault((en[0], en[1]), []).append(en)
-            if not by_id:
+            snap[d["tid"]] = (float((x1 + x2) / 2 / W), float(y2 / Hh), float(max((y2 - y1) / Hh, 0.02)), d["side"])
+        while len(self.mem_hist) > 60:
+            self.mem_hist.pop(next(iter(self.mem_hist)))
+
+    def _mem_entries(self, key):
+        """Identités faites à la main enregistrées pour cet instant (une par joueur)."""
+        by_id = {}
+        for en in self.memory.frames.get(key, []):
+            if en[1] and en[5] == "main" and en[7] != self.memory.session:
+                by_id.setdefault((en[0], en[1]), []).append(en)
+        best = {i: MatchMemory.best_identity(v) for i, v in by_id.items()}
+        # deux identités au même endroit (visionnages différents) : la plus récente l'emporte
+        out = {}
+        for i, e in sorted(best.items(), key=lambda kv: -kv[1][6]):
+            if any(o[0] == e[0] and o[7] != e[7] and np.hypot(o[2] - e[2], o[3] - e[3]) < 0.6 * max(o[4], e[4], 0.02)
+                   for o in out.values()):
                 continue
-            ids = list(by_id)
-            ref = [MatchMemory.best_identity(by_id[i]) for i in ids]
-            C = np.full((len(pts), len(ids)), 9.0)
-            for a, (d, p, h) in enumerate(pts):
-                for b, en in enumerate(ref):
-                    if d["side"] and d["side"] != en[0]:
+            out[i] = e
+        return out
+
+    def _restore_at(self, key, snap_keys):
+        """Image annotée `key` comparée aux positions des pistes aux instants `snap_keys`."""
+        from scipy.optimize import linear_sum_assignment
+        if key in self.mem_done:
+            return
+        mem = self._mem_entries(key)
+        if not mem:
+            return
+        self.mem_done.add(key)
+        # un clic de cette séance a toujours raison ; un nom repris ou remis peut être corrigé ici
+        session_manual = {(self.manual_side.get(t), self.votes.manual.get(t)) for t in self.click_tids}
+        mem = {i: e for i, e in mem.items() if i not in session_manual}
+        ids = list(mem)
+        # chaque instant voisin : association globale, refus des cas ambigus ; une piste qui
+        # recevrait deux noms différents selon l'instant est laissée de côté
+        per_tid = {}
+        for sk in sorted(snap_keys, key=lambda k: int(k.split("s")[0])):
+            snap = self.mem_hist.get(sk)
+            if not snap or not ids:
+                continue
+            tids = [t for t in snap if t not in self.click_tids]
+            if not tids:
+                continue
+            C = np.full((len(tids), len(ids)), 9.0)
+            for a, t in enumerate(tids):
+                x, y, h, side = snap[t]
+                for b, i in enumerate(ids):
+                    if side != i[0]:
                         continue
-                    C[a, b] = np.linalg.norm(p - np.array(en[2:4])) / h      # en hauteurs de joueur
+                    e = mem[i]
+                    C[a, b] = float(np.hypot(x - e[2], y - e[3])) / max(h, e[4], 0.02)
             ra, cb = linear_sum_assignment(C)
-            ok = [(a, b) for a, b in zip(ra, cb) if C[a, b] < 0.8]
-            if not ok:
+            for a, b in zip(ra, cb):
+                if C[a, b] >= 1.0:
+                    continue
+                row = np.sort(C[a])
+                col = np.sort(C[:, b])
+                if (len(row) > 1 and row[1] < 1.5 * row[0] + 0.15) or (len(col) > 1 and col[1] < 1.5 * col[0] + 0.15):
+                    continue                              # deux candidats presque aussi proches : ambigu
+                per_tid.setdefault(tids[a], []).append(ids[b])
+        for t, lst in per_tid.items():                    # pistes les plus récentes en dernier
+            if len(set(lst)) != 1:
                 continue
-            score = (len(ok), -float(np.mean([C[a, b] for a, b in ok])))
-            if best is None or score > best[0]:
-                best = (score, ok, C, ids, ref)
-        if best is None:
-            return
-        _, ok, C, ids, ref = best
-        for a, b in ok:
-            row = np.sort(C[a])
-            if len(row) > 1 and row[1] < 1.6 * row[0] + 0.15:
-                continue                                  # deux candidats presque aussi proches : ambigu
-            d = pts[a][0]
-            t, ident = d["tid"], ids[b]
-            v = self.mem_votes.setdefault(t, Counter())
-            v[ident] += 2 if ref[b][5] == "main" else 1
-            top, n = v.most_common(1)[0]
-            if n < 2 or n < 0.7 * sum(v.values()) or top != ident:
-                continue
+            ident = lst[0]
+            # l'instant annoté le plus récent qui ne laisse aucun doute l'emporte (la piste a pu
+            # passer d'un joueur à l'autre en croisant : on corrige tout de suite)
             if self.validated.get(t) == ident:
                 continue
             side, num = ident
             self.validated[t] = (side, num)
+            self.votes.manual[t] = num                    # identification à la main : on ne relit plus
+            self.manual_side[t] = side
             self.mem_restored += 1
-            if ref[b][5] == "main":
-                self.votes.manual[t] = num
-                self.manual_side[t] = side
             for o, k in list(self.validated.items()):    # un numéro, un seul joueur
-                if o != t and k == ident and o not in self.votes.manual:
+                if o != t and k == ident and o not in self.click_tids:
                     self.validated.pop(o, None)
+                    if self.manual_side.get(o) == side and self.votes.manual.get(o) == num:
+                        self.votes.manual.pop(o, None)
+                        self.manual_side.pop(o, None)
 
     def _record_memory(self, dets, now):
         tc = self.timecode(now)
@@ -1104,19 +1147,31 @@ class Engine:
                 gap = now - m["t"]
                 if gap > MEMORY_S:
                     continue
-                if gap > 3.0:
-                    continue        # absence plus longue : il faudra une lecture du numéro (une suffit)
+                if gap > 1.2:
+                    continue        # absence plus longue : il faudra une lecture du numéro ou la mémoire
                 if d.get("world") and m["world"]:
                     dist = np.hypot(d["world"][0] - m["world"][0], d["world"][1] - m["world"][1])
-                    ok = dist < 1.5 + 8.0 * gap              # un joueur fait au plus ~8-9 m/s
-                    score = dist
+                    ok = dist < 1.0 + 6.0 * gap
+                    score = dist / 1.8
                 else:
                     dist = np.linalg.norm(c - m["center"])
-                    ok = dist < max(1.2 * h, 0.8 * m["h"]) * (1 + 2 * gap)
+                    ok = dist < max(h, m["h"]) * (0.6 + 1.2 * gap)
                     score = dist / max(h, 1)
                 if ok and score < bscore:
                     best, bscore = m, score
             if best is not None:
+                # refus si un autre joueur de la même couleur est presque aussi proche (mêlée, croisement)
+                rival = False
+                for o in dets:
+                    if o is d or o["cluster"] != d["cluster"] or o["tid"] < 0:
+                        continue
+                    oc = np.array([(o["box"][0] + o["box"][2]) / 2, (o["box"][1] + o["box"][3]) / 2])
+                    if np.linalg.norm(oc - best["center"]) < 1.5 * max(np.linalg.norm(c - best["center"]), 0.5 * h):
+                        rival = True
+                        break
+                if rival:
+                    continue
+
                 side, num = best["key"]
                 self.votes.votes[d["tid"]][num] += 2.0       # repris : vaut des lectures sûres
                 self.votes.reads[d["tid"]][num] += 3
@@ -1680,13 +1735,14 @@ class Engine:
         cur = {s: self.shifts[s].current(game_t) for s in ("our", "them")}
         players = []
         for d in dets:
-            if d["cluster"] == REF:                     # arbitre désigné : exclu, rien n'est affiché
+            is_ref = d["cluster"] == REF                # arbitre désigné : encadré vert, exclu des calculs
+            if is_ref and d["tid"] in self.off_tids:    # « pas un joueur » : rien n'est affiché
                 continue
             x1, y1, x2, y2 = d["box"]
-            side, num = d["side"], d["num"]
-            if side is not None and side != self.focus:
+            side, num = (None, None) if is_ref else (d["side"], d["num"])
+            if not is_ref and side is not None and side != self.focus:
                 continue
-            if self.mode == "players" and (side, num) not in self.selected:
+            if not is_ref and self.mode == "players" and (side, num) not in self.selected:
                 continue
             k = d.get("kin")
             p = dict(tid=int(d["tid"]), box=[round(x1 / W, 4), round(y1 / Hh, 4), round(x2 / W, 4), round(y2 / Hh, 4)],
@@ -1701,6 +1757,11 @@ class Engine:
                     v = v if pv is None else 0.65 * v + 0.35 * pv        # vitesse lissée (réactive)
                     self.vel_smooth[d["tid"]] = v
                     p["v"] = [round(float(v[0]) / W, 4), round(float(v[1]) / Hh, 4)]
+            if is_ref:
+                p["ref"] = True
+                p["goalie"] = False
+                players.append(p)
+                continue
             if num and side:
                 info = self._roster(side).get(num, {})
                 p["name"] = info.get("short", "")

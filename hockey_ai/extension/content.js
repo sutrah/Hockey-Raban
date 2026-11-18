@@ -106,6 +106,7 @@
       <button data-mode="players">Joueur</button>
       <button id="pickBtn" title="Choisir le joueur isolé">Choisir</button>
       <button id="swapBtn" title="Inverser : quelle couleur de maillot est quelle équipe">Maillots ⇄</button>
+      <button id="cageBtn" title="Tracer une cage en 4 clics (Maj+clic : effacer les cages)">Cage</button>
       <button id="idBtn" title="Cliquer un joueur pour donner son nom">Identifier</button>
       <button id="locBtn" title="Retrouver la vidéo à l'écran">Recadrer</button>
       <button id="hideBtn" title="Masquer (Alt+H)">–</button>
@@ -133,6 +134,27 @@
   $("locBtn").onclick = () => send({ type: "locate_request" }) || showMarkers();
   $("hideBtn").onclick = () => toggleHidden();
   $("swapBtn").onclick = () => send({ type: "swap_colors" });
+  // tracé d'une cage : 4 clics sur la vidéo (pause automatique pendant le tracé)
+  const CAGE_STEPS = ["bas du poteau GAUCHE", "bas du poteau DROIT", "haut du poteau DROIT", "haut du poteau GAUCHE"];
+  let cagePts = null, cageResume = false;
+  $("cageBtn").onclick = (e) => {
+    if (e.shiftKey) { send({ type: "cage_clear" }); return; }
+    cagePts = []; picking = false;
+    if (video && !video.paused) { video.pause(); cageResume = true; }
+    cv.classList.add("pick"); $("cageBtn").classList.add("on");
+  };
+  cv.addEventListener("click", (e) => {
+    if (!cagePts) return;
+    e.stopPropagation();
+    const r = cv.getBoundingClientRect();
+    cagePts.push([(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]);
+    if (cagePts.length === 4) {
+      send({ type: "cage", pts: cagePts });
+      cagePts = null; cv.classList.remove("pick"); $("cageBtn").classList.remove("on");
+      if (cageResume && video) { const pr = video.play(); if (pr && pr.catch) pr.catch(() => {}); }
+      cageResume = false;
+    }
+  }, true);
   document.addEventListener("keydown", (e) => {
     if (e.altKey && (e.key === "h" || e.key === "H")) toggleHidden();
     if (e.key === "[" || e.key === "]") {               // anticipation du déplacement
@@ -376,7 +398,16 @@
     const fs2 = Math.max(11, Math.min(15, H / 60));
     ctx.font = `600 ${fs2}px Inter, Segoe UI, sans-serif`;
     ctx.textBaseline = "middle";
-    // cages (si la patinoire est repérée) : contour rouge
+    if (cagePts) {                          // tracé de cage en cours : points posés + consigne
+      ctx.fillStyle = "#ff4646";
+      for (const [u, v] of cagePts) { ctx.beginPath(); ctx.arc(u * W, v * H, 5, 0, 7); ctx.fill(); }
+      const msg = `Cage : clique le ${CAGE_STEPS[cagePts.length]} (${cagePts.length + 1}/4)`;
+      ctx.font = "700 16px Inter, Segoe UI, sans-serif";
+      const tw = ctx.measureText(msg).width;
+      ctx.fillStyle = "rgba(10,14,22,.85)"; ctx.fillRect(W / 2 - tw / 2 - 10, H * 0.25, tw + 20, 30);
+      ctx.fillStyle = "#fff"; ctx.fillText(msg, W / 2 - tw / 2, H * 0.25 + 16);
+    }
+    // cages (tracées à la main, ou calculées si la patinoire est repérée) : contour rouge
     if (state.cages) {
       ctx.strokeStyle = "rgba(255,70,70,.9)"; ctx.lineWidth = 2;
       for (const cg of state.cages) {
@@ -424,7 +455,7 @@
         ctx.font = `600 ${fs2}px Inter, Segoe UI, sans-serif`;
         continue;
       }
-      const col = p.side ? C[p.side] : "rgba(255,255,255,.6)";
+      const col = p.side ? C[p.side] : "rgba(70,70,80,.9)";      // sans équipe : gris foncé, visible sur la glace
       // squelette : épaisseur plus forte en mode identification et pour le joueur survolé
       if (p.kp && (p.side === focus || !p.side || picking)) {   // gris si l'équipe n'est pas encore connue
         const dx = (x1 - p.box[0]) * W, dy = (y1 - p.box[1]) * H;

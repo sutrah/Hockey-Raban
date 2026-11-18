@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Annotation des joueurs</title>
+<style>
+  :root { --bg:#0e131b; --panel:#161d28; --text:#eef1f6; --dim:#93a0b1; --our:#4a9eff; --them:#f5b928; --ref:#3ecf8e; --off:#6b7280; }
+  * { box-sizing:border-box; font-family: Inter, "Segoe UI", system-ui, sans-serif; }
+  body { margin:0; background:var(--bg); color:var(--text); display:flex; height:100vh; overflow:hidden; }
+  #main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  header { display:flex; gap:10px; align-items:center; padding:8px 12px; background:var(--panel); flex-wrap:wrap; }
+  header b { font-size:15px; }
+  button { background:#26303f; color:var(--text); border:0; border-radius:6px; padding:6px 10px; cursor:pointer; font-size:13px; }
+  button:hover { filter:brightness(1.25); }
+  button.primary { background:var(--our); color:#04111f; font-weight:700; }
+  .dim { color:var(--dim); font-size:12px; }
+  #stage { flex:1; position:relative; overflow:hidden; }
+  canvas { position:absolute; left:0; top:0; cursor:crosshair; }
+  aside { width:290px; background:var(--panel); padding:10px; overflow:auto; font-size:13px; }
+  aside h3 { margin:10px 0 6px; font-size:12px; color:var(--dim); letter-spacing:.04em; }
+  .leg span { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; vertical-align:-2px; }
+  #menu { position:absolute; display:none; background:#0b1018; border:1px solid #2a3442; border-radius:8px; padding:8px;
+          max-height:80vh; overflow:auto; width:250px; box-shadow:0 8px 30px rgba(0,0,0,.6); z-index:5; }
+  #menu h4 { margin:6px 0 4px; font-size:12px; color:var(--dim); }
+  #menu .grid { display:grid; grid-template-columns:1fr 1fr; gap:4px; }
+  #menu button { text-align:left; padding:4px 6px; font-size:12px; }
+  #msg { padding:6px 12px; font-size:13px; color:var(--ref); min-height:22px; }
+  kbd { background:#2a3442; border-radius:4px; padding:0 5px; font-size:11px; }
+  #ids div { display:flex; justify-content:space-between; padding:2px 0; border-bottom:1px solid #222b37; }
+</style>
+</head>
+<body>
+<div id="main">
+  <header>
+    <b id="title">Annotation</b>
+    <button id="prev">◀ Image précédente</button>
+    <span id="pos" class="dim"></span>
+    <button id="next">Image suivante ▶</button>
+    <span id="tc" class="dim"></span>
+    <span style="flex:1"></span>
+    <span id="prog" class="dim"></span>
+    <button id="export" class="primary">Exporter</button>
+  </header>
+  <div id="msg"></div>
+  <div id="stage"><canvas id="cv"></canvas><div id="menu"></div></div>
+</div>
+<aside>
+  <h3>MODE D'EMPLOI</h3>
+  <div>Clique un joueur encadré et choisis son nom. Le nom se propage aux autres images du même
+    joueur (<b>pointillé</b> = proposé) : corrige seulement ce qui est faux.</div>
+  <div style="margin-top:6px">Joueur oublié : <b>trace un cadre</b> autour de lui en glissant la souris.</div>
+  <div style="margin-top:6px"><kbd>←</kbd> <kbd>→</kbd> changer d'image · <kbd>Suppr</kbd> effacer l'étiquette survolée ·
+    enregistrement automatique.</div>
+  <h3>LÉGENDE</h3>
+  <div class="leg"><span style="background:var(--our)"></span><b id="lgOur">Nous</b></div>
+  <div class="leg"><span style="background:var(--them)"></span><b id="lgThem">Eux</b></div>
+  <div class="leg"><span style="background:var(--ref)"></span>Arbitre</div>
+  <div class="leg"><span style="background:var(--off)"></span>Pas un joueur / non annoté</div>
+  <h3>IDENTITÉS ANNOTÉES</h3>
+  <div id="ids"></div>
+</aside>
+<script>
+(async () => {
+  const $ = (id) => document.getElementById(id);
+  const data = await (await fetch("/api/data")).json();
+  const frames = data.frames, meta = data.meta;
+  let labels = data.labels || {};
+  labels.explicit = labels.explicit || {}; labels.extra = labels.extra || {};
+  const m = meta.match;
+  const our = meta.our || "home", them = our === "home" ? "away" : "home";
+  const roster = m ? { our: m.roster[our], them: m.roster[them] } : { our: [], them: [] };
+  const abbr = m ? { our: m.abbr[our], them: m.abbr[them] } : { our: "NOUS", them: "EUX" };
+  $("lgOur").textContent = abbr.our; $("lgThem").textContent = abbr.them;
+  $("title").textContent = m ? `${m.home} / ${m.away} · annotation` : "Annotation";
+  const COL = { our: "#4a9eff", them: "#f5b928", ref: "#3ecf8e", off: "#6b7280", none: "#9aa4b2" };
+  const nameOf = (side, num) => { const p = (roster[side] || []).find((q) => q.num === num); return p ? p.short : ""; };
+
+  let idx = 0, img = new Image(), scale = 1, ox = 0, oy = 0, hover = null, drag = null;
+  const cv = $("cv"), ctx = cv.getContext("2d"), menu = $("menu");
+
+  // ---------------------------------------------- propagation (même règle que l'export)
+  function resolved() {
+    const per = {};
+    frames.forEach((fr, i) => fr.dets.forEach((d) => {
+      const l = (labels.explicit[fr.file] || {})[d.tid];
+      if (l) (per[d.tid] = per[d.tid] || []).push([i, l]);
+    }));
+    const out = {};
+    frames.forEach((fr, i) => {
+      const r = {};
+      fr.dets.forEach((d) => {
+        const l = (labels.explicit[fr.file] || {})[d.tid];
+        if (l) { r[d.tid] = [l, true]; return; }
+        const c = per[d.tid] || [];
+        const prev = c.filter((x) => x[0] <= i), nxt = c.filter((x) => x[0] > i);
+        const pick = prev.length ? prev[prev.length - 1] : (nxt.length ? nxt[0] : null);
+        if (pick) r[d.tid] = [pick[1], false];
+      });
+      out[fr.file] = r;
+    });
+    return out;
+  }
+  let RES = resolved();
+
+  let saveTimer = null;
+  function save() {
+    RES = resolved(); render(); sidebar();
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => fetch("/api/labels", { method: "POST", body: JSON.stringify(labels) }), 400);
+  }
+
+  // ------------------------------------------------------------------ affichage
+  function load() {
+    const fr = frames[idx];
+    img = new Image();
+    img.onload = () => { fit(); render(); };
+    img.src = "/img/" + fr.file;
+    $("pos").textContent = `${idx + 1} / ${frames.length}`;
+    const tc = fr.tc ? `temps de jeu ${Math.floor(fr.tc[0] / 60)}:${String(Math.floor(fr.tc[0] % 60)).padStart(2, "0")}` : "pas de time code (bandeau non lu)";
+    $("tc").textContent = `· ${tc} · t=${fr.t}s`;
+    hideMenu();
+  }
+  function fit() {
+    const st = $("stage"), W = st.clientWidth, H = st.clientHeight;
+    scale = Math.min(W / img.width, H / img.height);
+    cv.width = W; cv.height = H;
+    ox = (W - img.width * scale) / 2; oy = (H - img.height * scale) / 2;
+  }
+  const S = (x, y) => [ox + x * scale, oy + y * scale];
+  function items() {
+    const fr = frames[idx], r = RES[fr.file] || {};
+    const out = fr.dets.map((d) => ({ kind: "det", tid: d.tid, box: d.box, lab: r[d.tid] ? r[d.tid][0] : null, explicit: r[d.tid] ? r[d.tid][1] : false }));
+    (labels.extra[fr.file] || []).forEach((e, k) => out.push({ kind: "extra", k, box: e.box, lab: e, explicit: true }));
+    return out;
+  }
+  function render() {
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    if (!img.width) return;
+    ctx.drawImage(img, ox, oy, img.width * scale, img.height * scale);
+    for (const it of items()) {
+      const [x1, y1] = S(it.box[0], it.box[1]), [x2, y2] = S(it.box[2], it.box[3]);
+      const l = it.lab;
+      const key = !l ? "none" : l.off ? "off" : l.ref ? "ref" : l.side;
+      ctx.strokeStyle = COL[key] || COL.none; ctx.lineWidth = hover === it ? 4 : 2.5;
+      ctx.setLineDash(it.explicit || !l ? [] : [7, 5]);
+      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+      ctx.setLineDash([]);
+      let txt = !l ? "?" : l.off ? "pas un joueur" : l.ref ? "ARB" : `${abbr[l.side]} ${l.num ? "#" + l.num + " " + nameOf(l.side, l.num) : "(n° ?)"}`;
+      if (l && !it.explicit) txt += " (proposé)";
+      ctx.font = "600 13px Inter, Segoe UI, sans-serif";
+      const tw = ctx.measureText(txt).width;
+      ctx.fillStyle = "rgba(10,14,22,.85)"; ctx.fillRect(x1, y1 - 18, tw + 8, 17);
+      ctx.fillStyle = COL[key] || COL.none; ctx.fillText(txt, x1 + 4, y1 - 5);
+    }
+    if (drag && drag.moved) {
+      ctx.strokeStyle = "#fff"; ctx.setLineDash([4, 4]); ctx.lineWidth = 2;
+      ctx.strokeRect(drag.x0, drag.y0, drag.x1 - drag.x0, drag.y1 - drag.y0); ctx.setLineDash([]);
+    }
+    // progression : images dont tous les cadres ont une étiquette
+    let done = 0;
+    frames.forEach((fr) => { const r = RES[fr.file] || {}; if (fr.dets.length && fr.dets.every((d) => r[d.tid])) done++; });
+    $("prog").textContent = `${done} / ${frames.length} images entièrement étiquetées`;
+  }
+  function sidebar() {
+    const cnt = {};
+    for (const fr of frames) for (const [tid, [l]] of Object.entries(RES[fr.file] || {})) {
+      if (!l || l.off) continue;
+      const k = l.ref ? "Arbitre" : `${abbr[l.side]} #${l.num || "?"} ${l.num ? nameOf(l.side, l.num) : ""}`;
+      cnt[k] = (cnt[k] || 0) + 1;
+    }
+    $("ids").innerHTML = Object.entries(cnt).sort().map(([k, n]) => `<div><span>${k}</span><span class="dim">${n} images</span></div>`).join("")
+      || '<div class="dim">rien encore</div>';
+  }
+
+  // ------------------------------------------------------------------ menu
+  function hideMenu() { menu.style.display = "none"; }
+  function showMenu(it, px, py) {
+    const btns = (side) => (roster[side] || []).map((p) =>
+      `<button data-side="${side}" data-num="${p.num}"><b>${p.num}</b> ${p.short}</button>`).join("");
+    menu.innerHTML = `<h4 style="color:${COL.our}">${abbr.our}</h4><div class="grid">${btns("our")}
+        <button data-side="our" data-num="">n° inconnu</button></div>
+      <h4 style="color:${COL.them}">${abbr.them}</h4><div class="grid">${btns("them")}
+        <button data-side="them" data-num="">n° inconnu</button></div>
+      <h4>AUTRE</h4><div class="grid"><button data-ref="1" style="color:${COL.ref}">⚑ Arbitre</button>
+        <button data-off="1">✕ Pas un joueur</button><button data-clear="1">Effacer</button><button data-close="1">Fermer</button></div>`;
+    const st = $("stage").getBoundingClientRect();
+    menu.style.left = Math.min(px, st.width - 260) + "px";
+    menu.style.top = Math.max(0, Math.min(py, st.height - 420)) + "px";
+    menu.style.display = "block";
+    menu.querySelectorAll("button").forEach((b) => b.onclick = () => {
+      const fr = frames[idx];
+      if (b.dataset.close) return hideMenu();
+      let lab = null;
+      if (b.dataset.ref) lab = { ref: true };
+      else if (b.dataset.off) lab = { off: true };
+      else if (!b.dataset.clear) lab = { side: b.dataset.side, num: b.dataset.num || null };
+      if (it.kind === "det") {
+        labels.explicit[fr.file] = labels.explicit[fr.file] || {};
+        if (lab) labels.explicit[fr.file][it.tid] = lab; else delete labels.explicit[fr.file][it.tid];
+      } else {
+        const arr = labels.extra[fr.file] || [];
+        if (lab) arr[it.k] = Object.assign({ box: it.box }, lab); else arr.splice(it.k, 1);
+        labels.extra[fr.file] = arr;
+      }
+      hideMenu(); save();
+    });
+  }
+
+  // ------------------------------------------------------------------ souris / clavier
+  const toImg = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left - ox) / scale, (e.clientY - r.top - oy) / scale, e.clientX - r.left, e.clientY - r.top]; };
+  const hit = (x, y) => {
+    let best = null, ba = 1e12;
+    for (const it of items()) {
+      const [x1, y1, x2, y2] = it.box;
+      if (x >= x1 - 4 && x <= x2 + 4 && y >= y1 - 4 && y <= y2 + 4) { const a = (x2 - x1) * (y2 - y1); if (a < ba) { best = it; ba = a; } }
+    }
+    return best;
+  };
+  cv.addEventListener("mousedown", (e) => {
+    const [x, y, px, py] = toImg(e);
+    drag = { x0: px, y0: py, x1: px, y1: py, ix0: x, iy0: y, moved: false };
+  });
+  cv.addEventListener("mousemove", (e) => {
+    const [x, y, px, py] = toImg(e);
+    if (drag) { drag.x1 = px; drag.y1 = py; if (Math.abs(px - drag.x0) + Math.abs(py - drag.y0) > 8) drag.moved = true; render(); return; }
+    const h = hit(x, y); if (h !== hover) { hover = h; render(); }
+  });
+  cv.addEventListener("mouseup", (e) => {
+    const [x, y, px, py] = toImg(e);
+    const d = drag; drag = null;
+    if (d && d.moved) {                          // nouveau cadre : joueur oublié par le détecteur
+      const fr = frames[idx];
+      const box = [Math.min(d.ix0, x), Math.min(d.iy0, y), Math.max(d.ix0, x), Math.max(d.iy0, y)].map((v) => Math.round(v));
+      if (box[2] - box[0] > 6 && box[3] - box[1] > 10) {
+        const arr = labels.extra[fr.file] = labels.extra[fr.file] || [];
+        arr.push({ box }); save();
+        showMenu({ kind: "extra", k: arr.length - 1, box }, px, py);
+      }
+      render(); return;
+    }
+    const it = hit(x, y);
+    if (it) showMenu(it, px + 10, py); else hideMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowRight" || e.key === "d") { idx = Math.min(frames.length - 1, idx + 1); load(); }
+    if (e.key === "ArrowLeft" || e.key === "a") { idx = Math.max(0, idx - 1); load(); }
+    if (e.key === "Escape") hideMenu();
+    if ((e.key === "Delete" || e.key === "Backspace") && hover) {
+      const fr = frames[idx];
+      if (hover.kind === "det") { if (labels.explicit[fr.file]) delete labels.explicit[fr.file][hover.tid]; }
+      else (labels.extra[fr.file] || []).splice(hover.k, 1);
+      save();
+    }
+  });
+  $("prev").onclick = () => { idx = Math.max(0, idx - 1); load(); };
+  $("next").onclick = () => { idx = Math.min(frames.length - 1, idx + 1); load(); };
+  $("export").onclick = async () => {
+    $("msg").textContent = "Export en cours…";
+    const r = await (await fetch("/api/export", { method: "POST", body: JSON.stringify(labels) })).json();
+    $("msg").textContent = r.msg || "Exporté";
+  };
+  window.addEventListener("resize", () => { fit(); render(); });
+  sidebar(); load();
+})();
+</script>
+</body>
+</html>

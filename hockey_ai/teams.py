@@ -221,6 +221,7 @@ def kit_features(frame, box, kp=None):
     # moyenne (et non médiane) : un maillot rayé noir/blanc tombe au milieu, donc dans la
     # zone de doute, au lieu de basculer au hasard côté noir ou côté blanc
     torso_L = float(lab[..., 0].mean())
+    dark_frac = float((lab[..., 0] < 100).mean())   # part sombre du torse (numéro clair inclus)
     x1, y1, x2, y2 = [float(v) for v in box]
     w, h = x2 - x1, y2 - y1
     if kp is not None and kp[11, 2] > 0.4 and kp[12, 2] > 0.4:
@@ -239,7 +240,7 @@ def kit_features(frame, box, kp=None):
     if px2 - px1 > 3 and py2 - py1 > 3:
         pl = cv2.cvtColor(frame[py1:py2, px1:px2], cv2.COLOR_BGR2LAB).astype(np.int16)
         red = float((((pl[..., 1] - 128) > 22) & (pl[..., 0] > 40)).mean())
-    return torso_L, red
+    return torso_L, red, dark_frac
 
 
 def otsu_threshold(values, default=110.0):

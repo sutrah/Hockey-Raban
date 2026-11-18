@@ -325,8 +325,11 @@ class Engine:
         self.goalie_track = {}
         self.ice_hist = {}
         self.seen_tids = set()
+        self.timing = {}
         self.new_tracks = 0
         self.goalie_logged = set()
+        self.manual_cages = []
+        self.cage_prev_gray = None
         self.defends = {}
         self.vel_smooth = {}
         self.crossings = {}
@@ -528,6 +531,18 @@ class Engine:
             self.selected = [(p["side"], str(p["num"])) for p in msg.get("players", [])
                              if p.get("side") == self.focus][:1]
             self.locked = {k: v for k, v in self.locked.items() if k in self.selected}
+        elif t == "cage":                      # cage tracée à la main : 4 coins (fractions de l'image)
+            if self.size:
+                W, Hh = self.size
+                pts = [[float(x) * W, float(y) * Hh] for x, y in msg.get("pts", [])][:4]
+                if len(pts) == 4:
+                    if len(self.manual_cages) >= 2:
+                        self.manual_cages.pop(0)
+                    self.manual_cages.append(dict(pts=pts, lost=0))
+                    self.log(f"[cage] cage tracée ({len(self.manual_cages)} au total)")
+        elif t == "cage_clear":
+            self.manual_cages = []
+            self.log("[cage] cages tracées effacées")
         elif t == "referee":                   # le coach désigne (ou retire) un arbitre
             tid = int(msg.get("tid"))
             self.ref_hits[tid] = 1000 if msg.get("is_ref") else -10000
@@ -708,6 +723,7 @@ class Engine:
                     time.sleep(wait)
                 now = time.time()
                 idx, frame = self.src.read()
+                self.timing["capture"] = self.timing.get("capture", 0) * 0.9 + (time.time() - now) * 100
                 if frame is None:
                     continue
                 if (frame.shape[1], frame.shape[0]) != tuple(self.size):
@@ -723,6 +739,13 @@ class Engine:
 
     # -------------------------------------------------------------- 1 image
     def process(self, idx, frame, now, dtw):
+        _t0 = time.time()
+        try:
+            self._process(idx, frame, now, dtw)
+        finally:
+            self.timing["total"] = self.timing.get("total", 0) * 0.9 + (time.time() - _t0) * 100
+
+    def _process(self, idx, frame, now, dtw):
         a = self.a
         self.cap_ts = time.time()                         # instant de la capture (horloge du PC)
         self.latest = frame
@@ -755,7 +778,9 @@ class Engine:
             self.log("[pause] vidéo en pause : lecture approfondie des numéros (et clics « Identifier »)")
 
         # --- détection
+        _t = time.time()
         dets = self._detect(idx, frame, now)
+        self.timing["détection+suivi"] = self.timing.get("détection+suivi", 0) * 0.9 + (time.time() - _t) * 100
         # public, banc, tribunes : on ne garde que les personnes qui ont les pieds sur la glace
         dets = [d for d in dets if self._keep_on_ice(frame, d)]
         self._smooth_pose(dets, now)
@@ -776,7 +801,9 @@ class Engine:
                 if len(self.calib_frames) >= 8:
                     self.static = static_mask_from_frames(self.calib_frames)
                     self._calibrate_async()
+        _t = time.time()
         H = self.cam.update(idx, frame, boxes) if self.cam is not None else None
+        self.timing["caméra"] = self.timing.get("caméra", 0) * 0.9 + (time.time() - _t) * 100
         self._last_H = H
 
         # --- équipes : règles explicites, pas de regroupement automatique
@@ -816,14 +843,16 @@ class Engine:
             f = feats.get(id(d))
             lab = UNK
             if self.clf_ready and f is not None:
-                L, red = f
+                L, red, dfrac = f
                 margin = 0.22 * abs(self.clf.centers[1][0] - self.clf.centers[0][0])   # zone de doute
                 rt = self.red_team
+                # part sombre du torse : un maillot noir reste majoritairement sombre même avec un
+                # grand numéro blanc (0,68 à 1) ; maillot blanc 0 à 0,15 ; arbitre rayé 0,3 à 0,55
                 if rt is not None and red > 0.3:
                     lab = rt                                  # culotte rouge : jamais l'autre équipe
-                elif L < self.lum_thr - margin and not (rt == 1 and red > 0.15):
+                elif dfrac >= 0.6 and not (rt == 1 and red > 0.15):
                     lab = 0
-                elif L > self.lum_thr + margin and not (rt == 0 and red > 0.15):
+                elif dfrac <= 0.25 and not (rt == 0 and red > 0.15):
                     lab = 1
             # maillot rayé (probable arbitre) : aucune équipe tant que le coach ne l'a pas désigné
             if lab in (0, 1) and (d["box"][3] - d["box"][1]) >= 40 and d["tid"] not in self.manual_side \
@@ -885,6 +914,8 @@ class Engine:
             for d, (x, y) in zip(dets, wp):
                 d["world"] = (float(x), float(y)) if self.rink.inside(x, y, 1.5) else None
         self._detect_goalies(dets, now, game_t)
+        self._track_cages(frame)
+        self._goalies_from_manual_cages(dets, now, game_t)
         self._persist_ids(dets, now)
         if self.mode == "players":            # joueur choisi reconnu à sa position : on le suit
             for d in dets:
@@ -937,6 +968,8 @@ class Engine:
             ident = sum(1 for d in dets if d["num"])
             lum = float(frame[::8, ::8].mean())
             loc += f" · nouvelles pistes {self.new_tracks}/10 s"
+            if self.timing:
+                loc += " · temps/image : " + ", ".join(f"{k} {v:.0f} ms" for k, v in self.timing.items())
             self.new_tracks = 0
             self.log(f"[direct] {self.fps:.1f} im/s · patinoire repérée {loc} · {len(dets)} joueurs vus, "
                      f"{ident} identifiés · bandeau {'lu' if self.sb.box else 'non trouvé'} · "
@@ -1105,6 +1138,63 @@ class Engine:
             # sens du jeu connu par la cage défendue : la jauge de pression n'a plus à le deviner
             self.pressure.defend_votes[:] = 0
             self.pressure.defend_votes[0 if self.defends["our"] < 0 else 1] = 50
+
+    def _track_cages(self, frame):
+        """Cages tracées à la main (4 coins) : suivies d'une image à l'autre par flux optique
+        (la cage est fixe, seule la caméra bouge). Perdue si elle sort de l'image."""
+        g = cv2.cvtColor(cv2.resize(frame, None, fx=0.5, fy=0.5), cv2.COLOR_BGR2GRAY)
+        prev = self.cage_prev_gray
+        self.cage_prev_gray = g
+        if prev is None or prev.shape != g.shape or not self.manual_cages:
+            return
+        keep = []
+        for cg in self.manual_cages:
+            p0 = (np.float32(cg["pts"]) * 0.5).reshape(-1, 1, 2)
+            p1, st, err = cv2.calcOpticalFlowPyrLK(prev, g, p0, None, winSize=(31, 31), maxLevel=3)
+            if st is None or st.sum() < 3:
+                cg["lost"] = cg.get("lost", 0) + 1
+            else:
+                ok = st.ravel() == 1
+                d = (p1 - p0).reshape(-1, 2)[ok]
+                shift = np.median(d, 0)                    # déplacement commun (robuste)
+                cg["pts"] = (np.float32(cg["pts"]) + shift * 2).tolist()
+                cg["lost"] = 0
+            H, W = frame.shape[:2]
+            xs = [p[0] for p in cg["pts"]]
+            if cg["lost"] < 15 and max(xs) > -0.2 * W and min(xs) < 1.2 * W:
+                keep.append(cg)
+            else:
+                self.log("[cage] cage tracée sortie de l'image (retrace-la quand elle revient)")
+        self.manual_cages = keep
+
+    def _goalies_from_manual_cages(self, dets, now, game_t):
+        """Gardien sans patinoire repérée : joueur resté plus de 2 s juste devant une cage tracée."""
+        for cg in self.manual_cages:
+            (bx1, by1), (bx2, by2) = cg["pts"][0], cg["pts"][1]          # bas des deux poteaux
+            cw = max(abs(bx2 - bx1), 10)
+            cx, cy = (bx1 + bx2) / 2, (by1 + by2) / 2
+            for d in dets:
+                t = d["tid"]
+                if t < 0 or d["side"] is None:
+                    continue
+                fx, fy = (d["box"][0] + d["box"][2]) / 2, d["box"][3]
+                near = abs(fx - cx) < 1.6 * cw and -0.3 * cw < (fy - cy) < 2.2 * cw
+                g = self.goalie_track.setdefault(("m", t), dict(n=0, t0=now))
+                if not near:
+                    g["n"] = max(0, g["n"] - 1)
+                    g["t0"] = now if g["n"] == 0 else g["t0"]
+                    continue
+                g["n"] += 1
+                if g["n"] >= 12 and now - g["t0"] > 2.0:
+                    d["goalie"] = True
+                    if self.match and t not in self.votes.manual:
+                        num = self.match.goalie_at(self._side_key(d["side"]), game_t)
+                        if num and self.validated.get(t) != (d["side"], num):
+                            self.validated[t] = (d["side"], num)
+                            d["num"] = num
+                            if (d["side"], num) not in self.goalie_logged:
+                                self.goalie_logged.add((d["side"], num))
+                                self.log(f"[gardien] {self._name(d['side'])} #{num} devant la cage tracée")
 
     def cages_px(self, H):
         """Contour des deux cages à l'écran (pour l'overlay), si la patinoire est repérée."""
@@ -1539,7 +1629,9 @@ class Engine:
                 p["dist"] = round(k.dist)
             players.append(p)
         msg = dict(type="state", mode=self.mode, focus=self.focus, fps=round(self.fps, 1), paused=self.paused,
-                   ts=round(self.cap_ts, 3), cages=self.cages_px(self._last_H),
+                   ts=round(self.cap_ts, 3),
+                   cages=([[[round(x / W, 4), round(y / Hh, 4)] for x, y in cg["pts"]] + [[round(cg["pts"][0][0] / W, 4), round(cg["pts"][0][1] / Hh, 4)]]
+                           for cg in self.manual_cages] or self.cages_px(self._last_H)),
                    status=dict(calib=self.calib_state if self.cam is None else ("ok" if calibrated else "perdu"),
                                match=(f"{self.match.short['home']} / {self.match.short['away']}" if self.match else None),
                                sides=len(self.cluster_side) == 2, colors=self.clf_ready,

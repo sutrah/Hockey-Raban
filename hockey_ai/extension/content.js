@@ -97,6 +97,7 @@
       <button data-mode="team" class="on">Équipe</button>
       <button data-mode="players">Joueur</button>
       <button id="pickBtn" title="Choisir le joueur isolé">Choisir</button>
+      <button id="swapBtn" title="Inverser : quelle couleur de maillot est quelle équipe">Maillots ⇄</button>
       <button id="idBtn" title="Cliquer un joueur pour donner son nom">Identifier</button>
       <button id="locBtn" title="Retrouver la vidéo à l'écran">Recadrer</button>
       <button id="hideBtn" title="Masquer (Alt+H)">–</button>
@@ -123,6 +124,7 @@
   $("idBtn").onclick = () => { picking = !picking; cv.classList.toggle("pick", picking); $("idBtn").classList.toggle("on", picking); };
   $("locBtn").onclick = () => send({ type: "locate_request" }) || showMarkers();
   $("hideBtn").onclick = () => toggleHidden();
+  $("swapBtn").onclick = () => send({ type: "swap_colors" });
   document.addEventListener("keydown", (e) => { if (e.altKey && (e.key === "h" || e.key === "H")) toggleHidden(); }, true);
   function toggleHidden() { hidden = !hidden; panel.style.opacity = hidden ? "0.25" : "1"; }
 
@@ -185,7 +187,9 @@
     const calib = { ok: "patinoire calée", calcul: "calibration de la patinoire…", attente: "calibration en attente",
                     perdu: "patinoire non repérée", "échec": "calibration impossible" }[st.calib] || st.calib;
     const clk = s.clock && s.clock.remaining != null ? ` · P${s.clock.period} ${fmt(s.clock.remaining)}${s.clock.running ? "" : " ⏸"}` : "";
-    $("status").textContent = `${st.match || "sans feuille de match"}${clk} · ${calib} · ${s.fps} im/s`;
+    const mail = st.our_color && roster && roster.abbr ? ` · ${roster.abbr.our} en ${st.our_color}` : "";
+    const pz = s.paused ? " · ⏸ pause : identification (clique « Identifier »)" : "";
+    $("status").textContent = `${st.match || "sans feuille de match"}${clk} · ${calib}${mail} · ${s.fps} im/s${pz}`;
     let h = "";
     for (const p of s.pp || []) {
       const who = p.side === "our" ? (roster ? roster.abbr.our : "NOUS") : (roster ? roster.abbr.them : "EUX");

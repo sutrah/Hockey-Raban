@@ -132,6 +132,13 @@ class GTDetector:
         pass
 
 
+def _iou(a, b):
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    return inter / max((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter, 1e-6)
+
+
 def auto_device():
     try:
         import torch
@@ -264,11 +271,21 @@ class Engine:
         self.known = {}          # tid -> dict(key, cluster, t, world, center, h, valid) : joueurs identifiés
         self.validated = {}      # tid -> (camp, num) : identité sûre, le numéro n'est plus relu
         self.recent_lost = set() # (camp, num) sortis du champ depuis moins de 30 s
+        self.sides_locked = False
+        self.our_color = None
+        self.need_check = {}     # tid -> instant : identité à revérifier (croisement de joueurs)
+        self.next_verify = {}
+        self.contra = {}
+        self.prev_small = None
+        self.still_since = None
+        self.paused = False
+        self.pause_done = set()
         # lecture du bandeau (1 fois/s) et des numéros : en arrière-plan
         self.latest = None
         if not os.environ.get("HOCKEY_NO_SB"):
             threading.Thread(target=self._scoreboard_loop, daemon=True).start()
         self.ocr = Worker(lambda job: read_number(job["crop"]), maxsize=4)
+        self.ocr_pause = Worker(lambda job: read_number(job["crop"]), maxsize=40)
 
     # ----------------------------------------------------------- feuille FFHG
     def _load_match(self):
@@ -424,6 +441,8 @@ class Engine:
                 W, Hh = self.size
                 b = np.array(msg["box"], float) * [W, Hh, W, Hh]
                 self.locked[(side, num)] = dict(box=b, t=time.time(), vel=np.zeros(2))
+        elif t == "swap_colors":
+            self.swap_sides()
         elif t == "ui":
             self.ui_rects = [tuple(r) for r in msg.get("rects", [])]
             if self.cam is not None:
@@ -515,6 +534,19 @@ class Engine:
                 self.rec.event(game_t, "score", score=list(self.sb.score))
             self.last_score = self.sb.score
 
+        # --- vidéo en pause ? (image identique depuis plus d'1 s) -> lecture approfondie des numéros
+        g = cv2.cvtColor(cv2.resize(frame, (160, 90)), cv2.COLOR_BGR2GRAY).astype(np.int16)
+        if self.prev_small is not None and np.abs(g - self.prev_small).mean() < 0.8:
+            self.still_since = self.still_since or now
+        else:
+            if self.paused:
+                self.log("[pause] lecture reprise")
+            self.still_since, self.paused, self.pause_done = None, False, set()
+        self.prev_small = g
+        if self.still_since and now - self.still_since > 1.0 and not self.paused:
+            self.paused = True
+            self.log("[pause] vidéo en pause : lecture approfondie des numéros (et clics « Identifier »)")
+
         # --- détection
         dets = self._detect(idx, frame, now)
         boxes = [d["box"] for d in dets]
@@ -534,7 +566,11 @@ class Engine:
 
         # --- équipes (couleurs apprises sur les premières secondes)
         if not self.clf_ready:
+            Hh = frame.shape[0]
             for d in dets:
+                x1, y1, x2, y2 = d["box"]
+                if y2 < 0.3 * Hh or (y2 - y1) < 40:        # tribunes ou trop petit
+                    continue
                 self.clf.add_sample(jersey_feature(frame, d["box"]))
             if len(self.clf.samples) >= 60:
                 try:
@@ -568,8 +604,17 @@ class Engine:
                 if num and d["side"] and num in self._roster(d["side"]):
                     d["num"] = num
                     n = self.votes.reads[d["tid"]][num]
-                    if d["tid"] in self.votes.manual or (conf >= 0.8 and n >= 3):
+                    avg = self.votes.votes[d["tid"]][num] / max(n, 1)
+                    if d["tid"] in self.votes.manual or (conf >= 0.85 and n >= 4 and avg >= 0.6):
                         self.validated[d["tid"]] = (d["side"], num)      # validé : plus de lecture
+
+        # croisement de deux joueurs de la même équipe : le suivi peut échanger leurs identités
+        for i, a in enumerate(dets):
+            for b in dets[i + 1:]:
+                if a["cluster"] == b["cluster"] and a["cluster"] in (0, 1) and _iou(a["box"], b["box"]) > 0.25:
+                    for d in (a, b):
+                        if d["tid"] in self.validated:
+                            self.need_check[d["tid"]] = now
 
         # --- positions sur la glace, vitesses, présences
         world = []
@@ -716,16 +761,11 @@ class Engine:
                 gap = now - m["t"]
                 if gap > MEMORY_S:
                     continue
-                if gap > 6.0:
-                    # longue absence : on ne reprend le nom que s'il n'y a aucune ambiguïté
-                    same = [x for x in lost if x["cluster"] == d["cluster"] and x["key"] not in visible
-                            and 6.0 < now - x["t"] <= MEMORY_S]
-                    if len(same) == 1 and (best is None):
-                        best, bscore = m, 1e6
-                    continue
+                if gap > 3.0:
+                    continue        # absence plus longue : il faudra une lecture du numéro (une suffit)
                 if d.get("world") and m["world"]:
                     dist = np.hypot(d["world"][0] - m["world"][0], d["world"][1] - m["world"][1])
-                    ok = dist < 2.0 + 9.0 * gap              # un joueur fait au plus ~9 m/s
+                    ok = dist < 1.5 + 8.0 * gap              # un joueur fait au plus ~8-9 m/s
                     score = dist
                 else:
                     dist = np.linalg.norm(c - m["center"])
@@ -759,36 +799,59 @@ class Engine:
         self.recent_lost = {m["key"] for m in self.known.values() if m["key"] not in vis}
 
     def _resolve_sides(self):
-        """Quelle couleur de maillot = quelle équipe (d'après les numéros lus et les clics du coach)."""
-        v = self.side_votes
-        d0 = v[0][0] - v[0][1] + v[1][1] - v[1][0]      # cluster 0 = nous, cluster 1 = eux
-        if abs(d0) >= 8:
-            new = {0: "our", 1: "them"} if d0 > 0 else {0: "them", 1: "our"}
-            if new != self.cluster_side:
-                self.log(f"[équipes] maillots identifiés (score {d0:+.1f})")
-                self.cluster_side = new
+        """Quelle couleur de maillot = quelle équipe.
+
+        Décidé par la COULEUR (sombre / clair), pas par les numéros lus (trop peu fiables) :
+        option --our-color, sinon l'équipe à domicile est supposée en maillot sombre (Brest joue
+        en noir à la Rïnkla). Un clic sur « Maillots ⇄ » dans l'overlay inverse si besoin.
+        Une fois décidé, ce n'est plus remis en cause automatiquement."""
+        if self.sides_locked or not self.clf_ready:
             return
-        if len(self.cluster_side) == 2:
+        L = [c[0] for c in self.clf.centers]
+        dark = int(np.argmin(L))
+        our_color = self.a.our_color
+        if our_color not in ("sombre", "clair"):
+            our_color = "sombre" if (not self.match or self.match.our == "home") else "clair"
+        mine = dark if our_color == "sombre" else 1 - dark
+        self.cluster_side = {mine: "our", 1 - mine: "them"}
+        self.our_color = our_color
+        self.sides_locked = True
+        self.log(f"[équipes] {self._name('our')} = maillots {our_color}s, {self._name('them')} = "
+                 f"maillots {'clair' if our_color == 'sombre' else 'sombre'}s "
+                 "(bouton « Maillots ⇄ » de l'overlay si c'est inversé)")
+
+    def _name(self, side):
+        if not self.match:
+            return "nous" if side == "our" else "eux"
+        return self.match.abbr[self._side_key(side)]
+
+    def swap_sides(self):
+        if len(self.cluster_side) != 2:
             return
-        if self.a.our_color in ("sombre", "clair") and self.clf_ready and not self.cluster_side:
-            L = [c[0] for c in self.clf.centers]
-            dark = int(np.argmin(L))
-            mine = dark if self.a.our_color == "sombre" else 1 - dark
-            self.cluster_side = {mine: "our", 1 - mine: "them"}
+        self.cluster_side = {k: ("them" if v == "our" else "our") for k, v in self.cluster_side.items()}
+        self.our_color = "clair" if self.our_color == "sombre" else "sombre"
+        # toutes les identités déduites jusque-là sont fausses : on repart de zéro (sauf clics du coach)
+        self.validated.clear()
+        self.known.clear()
+        for t in list(self.votes.votes):
+            if t not in self.votes.manual:
+                self.votes.forget(t)
+        self.log(f"[équipes] inversion : {self._name('our')} = maillots {self.our_color}s")
 
     def _read_numbers(self, frame, dets, now):
         """Envoie quelques dos à lire en arrière-plan et applique les résultats déjà prêts."""
         if not self.match:
             return
         by_tid = {d["tid"]: d for d in dets}
-        for job, reads in self.ocr.results():
+        import itertools
+        for job, reads in itertools.chain(self.ocr.results(), self.ocr_pause.results()):
             if not reads:
                 continue
             cl, side, tid = job["cluster"], job["side"], job["tid"]
             for num, conf in reads:              # quelle couleur de maillot = quelle équipe
                 ino, inth = num in self._roster("our"), num in self._roster("them")
                 if ino != inth and cl in (0, 1):
-                    self.side_votes[cl][0 if ino else 1] += conf
+                    self.side_votes[cl][0 if ino else 1] += conf     # gardé pour information seulement
             if self.mode == "players":
                 d = by_tid.get(tid)
                 for num, conf in sorted(reads, key=lambda r: -r[1]):
@@ -798,6 +861,20 @@ class Engine:
                         if d is not None:
                             d["key"] = key
                         break
+            elif tid in self.validated:
+                # vérification : 2 lectures sûres d'un AUTRE numéro de la feuille -> identité retirée
+                vs, vn = self.validated[tid]
+                for num, conf in reads:
+                    if num == vn and conf >= 0.5:
+                        self.need_check.pop(tid, None)
+                        self.contra.pop(tid, None)
+                    elif conf >= 0.6 and len(num) == 2 and num in self._roster(vs):
+                        self.contra[tid] = self.contra.get(tid, 0) + 1
+                        if self.contra[tid] >= 2:
+                            self.log(f"[numéros] identité #{vn} retirée (lu #{num} deux fois)")
+                            self.validated.pop(tid, None)
+                            self.votes.forget(tid)
+                            self.contra.pop(tid, None)
             elif tid not in self.validated:
                 allowed = set(self._roster(side)) if side else set(self._roster("our")) | set(self._roster("them"))
                 self.votes.add(tid, reads, allowed)
@@ -818,13 +895,37 @@ class Engine:
             h = d["box"][3] - d["box"][1]
             if h < self.a.min_px or now < self.next_ocr.get(d["tid"], 0):
                 continue
-            if self.mode == "team" and (d["tid"] in self.validated or d["tid"] in self.votes.manual):
+            if self.mode == "team" and d["tid"] in self.votes.manual:
                 continue
+            if self.mode == "team" and d["tid"] in self.validated:
+                # validé : on ne relit que pour vérifier après un croisement, ou toutes les 10 s
+                if d["tid"] not in self.need_check and now < self.next_verify.get(d["tid"], 0):
+                    continue
+                self.next_verify[d["tid"]] = now + 10.0
             if want_side and d["side"] and d["side"] not in want_side:
                 continue
             if d["side"] and d["side"] != self.focus:     # on ne lit que l'équipe analysée
                 continue
             cands.append((-h, d))
+        if self.paused:
+            # pause : chaque joueur non identifié est lu une fois, en plusieurs cadrages (dos décalé
+            # à gauche/droite, plus haut, manches) ; 3 lectures concordantes suffisent à le valider
+            for _, d in sorted(cands, key=lambda t: t[0]):
+                if d["tid"] in self.pause_done or d["tid"] < 0:
+                    continue
+                x1, y1, x2, y2 = d["box"]
+                w, h = x2 - x1, y2 - y1
+                variants = [d["box"], [x1 - 0.08 * w, y1, x2 - 0.08 * w, y2], [x1 + 0.08 * w, y1, x2 + 0.08 * w, y2],
+                            [x1, y1 - 0.05 * h, x2, y2 - 0.05 * h]]
+                jobs = [back_crop(frame, np.array(b), sleeves=False) for b in variants]
+                jobs.append(back_crop(frame, d["box"], sleeves=True))
+                for crop in jobs:
+                    if crop is not None:
+                        self.ocr_pause.put(dict(crop=crop, tid=d["tid"], cluster=d["cluster"], side=d["side"],
+                                                box=d["box"].copy()))
+                self.pause_done.add(d["tid"])
+                break                       # un joueur par image : la file reste courte
+            return
         for _, d in sorted(cands, key=lambda t: t[0])[: self.a.ocr_per_frame]:
             # grands joueurs : une lecture sur deux inclut les manches
             sleeves = (d["box"][3] - d["box"][1]) > 2 * self.a.min_px and self.next_ocr.get(("s", d["tid"]), 0) <= now
@@ -864,10 +965,11 @@ class Engine:
                 p["speed"] = round(k.speed, 1)
                 p["dist"] = round(k.dist)
             players.append(p)
-        msg = dict(type="state", mode=self.mode, focus=self.focus, fps=round(self.fps, 1),
+        msg = dict(type="state", mode=self.mode, focus=self.focus, fps=round(self.fps, 1), paused=self.paused,
                    status=dict(calib=self.calib_state if self.cam is None else ("ok" if calibrated else "perdu"),
                                match=(f"{self.match.short['home']} / {self.match.short['away']}" if self.match else None),
-                               sides=len(self.cluster_side) == 2, colors=self.clf_ready),
+                               sides=len(self.cluster_side) == 2, colors=self.clf_ready,
+                               our_color=self.our_color),
                    clock=self.sb.state(), players=players)
         f = self.focus
         if self.mode == "team":
@@ -933,7 +1035,7 @@ def main():
     ap.add_argument("--patinoire", default=None, help="nom du profil de patinoire si pas de feuille de match")
     ap.add_argument("--recalib", action="store_true", help="refait la calibration de la patinoire")
     ap.add_argument("--our-color", default=None, choices=["sombre", "clair"],
-                    help="maillot de ton équipe si les numéros ne suffisent pas à le deviner")
+                    help="maillot de ton équipe (défaut : sombre à domicile, clair à l'extérieur)")
     ap.add_argument("--weights", default="yolov8s.pt")
     ap.add_argument("--imgsz", type=int, default=960)
     ap.add_argument("--conf", type=float, default=0.3)

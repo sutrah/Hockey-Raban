@@ -106,6 +106,15 @@ py live_engine.py --match 84389
    - vignettes pour `py train_numeros.py` (reconnaissance des joueurs) et pour un futur
      entraînement des équipes et du détecteur (`dataset_equipes/`, `dataset_detection/`).
 
+### Vérifier que l'export a été pris en compte
+
+1. Sur la page d'annotation, après « Exporter » : `Export : N identités dans la mémoire du match…`
+   (N doit être grand, de l'ordre de plusieurs centaines pour ~110 images).
+2. Au démarrage du moteur : `[mémoire] X instants déjà connus … (Y identifications à la main)`.
+   Si Y vaut 0, le moteur ne lit pas le bon fichier (autre match ou autre dossier).
+3. Pendant la relecture du passage annoté, la ligne `[direct]` affiche `mémoire : N noms remis`.
+   Ce nombre doit augmenter pendant le passage annoté. S'il reste à 0, le chrono du bandeau n'est pas lu.
+
 ## Réglages utiles
 
 | Option | Rôle |

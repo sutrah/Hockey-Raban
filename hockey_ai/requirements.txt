@@ -1,0 +1,13 @@
+ultralytics>=8.3
+opencv-python>=4.8
+numpy
+scipy
+scikit-learn
+pillow
+lap
+
+# --- analyse en direct (live_engine.py)
+easyocr
+websockets>=12
+mss
+dxcam ; platform_system == "Windows"

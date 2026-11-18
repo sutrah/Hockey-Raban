@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Hockey AI – overlay coach",
+  "version": "1.0.0",
+  "description": "Affiche par-dessus la vidéo du match l'analyse calculée en direct par le moteur Hockey AI (sur ce PC).",
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "all_frames": true,
+      "run_at": "document_idle",
+      "js": ["content.js"]
+    }
+  ],
+  "action": { "default_title": "Hockey AI" }
+}

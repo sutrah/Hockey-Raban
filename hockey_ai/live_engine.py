@@ -229,6 +229,9 @@ class Engine:
             self.det = GTDetector(args.gt)
         else:
             self.det = Detector(args.weights, args.imgsz, args.conf, args.device or auto_device())
+        # Tout charger ICI, avant de lancer les fils en parallèle : sinon deux fils importent
+        # torchvision en même temps et Python s'arrête (« deadlock detected by _ModuleLock »).
+        self._preload()
         # état
         self.mode = "team"
         self.focus = "our"                  # équipe analysée : une seule à la fois ("our" / "them")
@@ -288,6 +291,24 @@ class Engine:
             threading.Thread(target=self._scoreboard_loop, daemon=True).start()
         self.ocr = Worker(lambda job: read_number(job["crop"]), maxsize=4)
         self.ocr_pause = Worker(lambda job: read_number(job["crop"]), maxsize=40)
+
+    def _preload(self):
+        self.log("[ok] chargement des modèles (détection des joueurs, lecture de texte)…")
+        try:
+            import torch  # noqa: F401
+            import torchvision  # noqa: F401
+        except Exception:
+            pass
+        try:
+            from live_ocr import OCR
+            OCR.reader()
+        except Exception as ex:
+            self.log(f"[ocr] lecture de texte indisponible ({ex}) : numéros et bandeau désactivés")
+        try:
+            dummy = np.zeros((360, 640, 3), np.uint8)
+            self.det.detect(dummy)
+        except Exception as ex:
+            self.log(f"[détection] préchauffage impossible : {ex}")
 
     # ----------------------------------------------------------- feuille FFHG
     def _load_match(self):

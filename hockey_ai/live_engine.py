@@ -470,6 +470,9 @@ class Engine:
             if tid is not None:
                 self.votes.manual[int(tid)] = num
                 self.manual_side[int(tid)] = side
+                self.validated[int(tid)] = (side, num)
+                info = self._roster(side).get(num, {})
+                self.log(f"[clic] {self._name(side)} #{num} {info.get('short', '')} attribué")
                 cl = self.last_cluster.get(int(tid))
                 if cl in (0, 1):
                     self.side_votes[cl][0 if side == "our" else 1] += 10
@@ -571,15 +574,17 @@ class Engine:
             self.last_score = self.sb.score
 
         # --- vidéo en pause ? (image identique depuis plus d'1 s) -> lecture approfondie des numéros
-        g = cv2.cvtColor(cv2.resize(frame, (160, 90)), cv2.COLOR_BGR2GRAY).astype(np.int16)
-        if self.prev_small is not None and np.abs(g - self.prev_small).mean() < 0.8:
+        # vraie pause = image STRICTEMENT figée (en jeu, même caméra immobile, le bruit de la
+        # compression et les joueurs font bouger l'image bien plus que ce seuil)
+        g = cv2.cvtColor(cv2.resize(frame, (320, 180), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY).astype(np.int16)
+        if self.prev_small is not None and g.shape == self.prev_small.shape and np.abs(g - self.prev_small).mean() < 0.12:
             self.still_since = self.still_since or now
         else:
             if self.paused:
                 self.log("[pause] lecture reprise")
             self.still_since, self.paused, self.pause_done = None, False, set()
         self.prev_small = g
-        if self.still_since and now - self.still_since > 1.0 and not self.paused:
+        if self.still_since and now - self.still_since > 1.5 and not self.paused:
             self.paused = True
             self.log("[pause] vidéo en pause : lecture approfondie des numéros (et clics « Identifier »)")
 
@@ -709,13 +714,15 @@ class Engine:
             self.last_log = now
             st = self.cam.stats if self.cam is not None else None
             loc = f"{100 * st['located'] / max(st['frames'], 1):.0f} %" if st else self.calib_state
+            if self.cam is not None and getattr(self.cam, "last_try", None):
+                loc += f" (dernier essai {self.cam.last_try[1]:.2f}, seuil {self.cam.accept:.2f})"
             ident = sum(1 for d in dets if d["num"])
             lum = float(frame[::8, ::8].mean())
             self.log(f"[direct] {self.fps:.1f} im/s · patinoire repérée {loc} · {len(dets)} joueurs vus, "
                      f"{ident} identifiés · bandeau {'lu' if self.sb.box else 'non trouvé'} · "
                      f"image {frame.shape[1]}x{frame.shape[0]}{' NOIRE' if lum < 12 else ''}")
             if self.a.apercu:                  # diagnostic : une seule image, remplacée à chaque fois
-                cv2.imwrite(os.path.join(HERE, "apercu_capture.jpg"), cv2.resize(frame, None, fx=0.5, fy=0.5))
+                cv2.imwrite(os.path.join(HERE, "apercu_capture.jpg"), self._apercu(frame, H, dets))
         # --- envoi à l'overlay (10 fois/s au plus)
         if now - self.last_send >= 0.1:
             self.last_send = now
@@ -836,6 +843,40 @@ class Engine:
         self.validated = {t: k for t, k in self.validated.items() if t in seen_now or t in self.known}
         vis = {(d["side"], d["num"]) for d in dets if d["num"]}
         self.recent_lost = {m["key"] for m in self.known.values() if m["key"] not in vis}
+
+    def _apercu(self, frame, H, dets):
+        """Image de diagnostic : lignes de la patinoire projetées (vert = suivi accepté,
+        rouge = dernier essai refusé), joueurs détectés, état."""
+        from autocalib import homographies
+        v = frame.copy()
+        Hw, col, txt = None, None, "patinoire : pas encore calibrée"
+        if H is not None:
+            Hw, col = np.linalg.inv(H), (0, 255, 0)
+            txt = "patinoire reperee (vert)"
+        elif self.cam is not None and getattr(self.cam, "last_try", None):
+            q, cost = self.cam.last_try[:2]
+            if q is not None:
+                Hw = homographies(np.r_[self.cam.center, q], self.size)[0]
+                col = (0, 0, 255)
+                txt = f"essai refuse (rouge) score {cost:.2f} > seuil {self.cam.accept:.2f}"
+        if Hw is not None:
+            for poly, _ in self.rink.markings():
+                P = np.c_[poly, np.ones(len(poly))] @ Hw.T
+                if (P[:, 2] <= 0).any():
+                    continue
+                q2 = P[:, :2] / P[:, 2:3]
+                if np.abs(q2).max() > 1e5:
+                    continue
+                cv2.polylines(v, [np.int32(q2)], False, col, 2, cv2.LINE_AA)
+        for d in dets:
+            x1, y1, x2, y2 = [int(a) for a in d["box"]]
+            c = (255, 160, 60) if d.get("side") == "our" else ((60, 200, 255) if d.get("side") == "them" else (200, 200, 200))
+            cv2.rectangle(v, (x1, y1), (x2, y2), c, 2)
+            if d.get("num"):
+                cv2.putText(v, d["num"], (x1, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.8, c, 2)
+        cv2.putText(v, txt, (20, v.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 5)
+        cv2.putText(v, txt, (20, v.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        return cv2.resize(v, None, fx=0.6, fy=0.6)
 
     def _collect(self, frame, dets, now):
         """Vignettes du dos (pas de vidéo) des joueurs nommés par un clic du coach : étiquettes

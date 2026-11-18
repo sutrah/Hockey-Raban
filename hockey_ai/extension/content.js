@@ -125,7 +125,13 @@
   $("locBtn").onclick = () => send({ type: "locate_request" }) || showMarkers();
   $("hideBtn").onclick = () => toggleHidden();
   $("swapBtn").onclick = () => send({ type: "swap_colors" });
-  document.addEventListener("keydown", (e) => { if (e.altKey && (e.key === "h" || e.key === "H")) toggleHidden(); }, true);
+  document.addEventListener("keydown", (e) => {
+    if (e.altKey && (e.key === "h" || e.key === "H")) toggleHidden();
+    const typing = /INPUT|TEXTAREA/.test((document.activeElement || {}).tagName || "");
+    if (!typing && !e.altKey && !e.ctrlKey && (e.key === "i" || e.key === "I")) {   // touche I : identifier
+      picking = !picking; cv.classList.toggle("pick", picking); $("idBtn").classList.toggle("on", picking);
+    }
+  }, true);
   function toggleHidden() { hidden = !hidden; panel.style.opacity = hidden ? "0.25" : "1"; }
 
   // marqueurs magenta aux 4 coins : le moteur s'en sert pour trouver la vidéo à l'écran
@@ -200,7 +206,7 @@
     if (s.mode === "team") {
       const rows = (s.onice || []).map((p) => `<div class="row"><span class="num" style="color:${fc}">${p.num}</span>
         <span>${p.name || ""}</span><span class="t" style="background:${shiftColor(p.shift)}">${fmt(p.shift)}</span></div>`).join("")
-        || `<div class="st">joueurs pas encore identifiés</div>`;
+        || `<div class="st">aucun nom encore : mets en pause, touche <b>I</b> (ou « Identifier »), puis clique un joueur</div>`;
       const pr = s.pressure || {};
       const pct = (v) => Math.round((v || 0) * 100);
       const gauge = pr.known ? `<div class="gauge"><div style="width:${pct(pr.off)}%;background:${C.ok}"></div>

@@ -97,6 +97,37 @@ class Match:
         self.chrono = d.get("chronometre") or {}
         self.period_len = (d.get("periodes") or {}).get("duree", 20) * 60
 
+    def goalie_at(self, side, game_s):
+        """Numéro du gardien sur la glace à cet instant (d'après les entrées/sorties de la feuille)."""
+        gk = self.goalies(side)
+        best = None
+        for mv in self.raw.get("mouvements", []) or []:
+            pers = mv.get("personne") or {}
+            num = str(pers.get("numero", "")).strip()
+            team_id = (mv.get("equipe") or {}).get("id")
+            if num not in gk or team_id != self.ids[side]:
+                continue
+            a = mv.get("temps_rentree_secondes") or 0
+            b = mv.get("temps_sortie_secondes")
+            if a <= (game_s or 0) and (b is None or (game_s or 0) < b):
+                best = num
+        if best is not None:
+            return best
+        # tirs et buts de la feuille : quel gardien était dans la cage à chaque action
+        seen = []
+        for ev in self.events:
+            g = ev.get("gardien") or {}
+            num = str(g.get("numero", "")).strip()
+            if num in gk and g.get("equipe_id") == self.ids[side] and ev.get("temps") is not None:
+                seen.append((ev["temps"], num))
+        if seen:
+            seen.sort()
+            before = [n for t, n in seen if t <= (game_s or 0)]
+            return before[-1] if before else seen[0][1]
+        if len(gk) == 1:
+            return next(iter(gk))
+        return None                     # doute : pas de nom automatique (un clic suffit)
+
     def goalies(self, side):
         return {n for n, p in self.roster[side].items() if p["pos"] == "GB"}
 

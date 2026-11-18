@@ -370,6 +370,13 @@
     const fs2 = Math.max(11, Math.min(15, H / 60));
     ctx.font = `600 ${fs2}px Inter, Segoe UI, sans-serif`;
     ctx.textBaseline = "middle";
+    // cages (si la patinoire est repérée) : contour rouge
+    if (state.cages) {
+      ctx.strokeStyle = "rgba(255,70,70,.9)"; ctx.lineWidth = 2;
+      for (const cg of state.cages) {
+        ctx.beginPath(); cg.forEach(([u, v], i) => i ? ctx.lineTo(u * W, v * H) : ctx.moveTo(u * W, v * H)); ctx.stroke();
+      }
+    }
     const nowS = Date.now() / 1000;
     const frameDt = Math.min(0.1, nowS - (lastDraw || nowS)); lastDraw = nowS;
     for (const k in smooth) if (!shown[k]) delete smooth[k];
@@ -427,7 +434,7 @@
         if (p.side && state.mode === "team") { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(cx, top - 6, 3.5, 0, 7); ctx.fill(); }
         continue;
       }
-      let txt = `${p.num} ${p.name || ""}`.trim();
+      let txt = `${p.goalie ? "G " : ""}${p.num} ${p.name || ""}`.trim();
       if (state.mode === "players" && p.speed != null) txt += ` · ${Math.round(p.speed)} km/h · ${p.dist} m`;
       const tw = ctx.measureText(txt).width;
       let sw = 0, stxt = "";

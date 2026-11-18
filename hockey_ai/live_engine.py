@@ -322,6 +322,9 @@ class Engine:
         self.ref_disabled = False
         self.next_recog = {}
         self.pose_smooth = {}
+        self.goalie_track = {}
+        self.goalie_logged = set()
+        self.defends = {}
         self.vel_smooth = {}
         self.crossings = {}
         self.collect_count = {}
@@ -724,6 +727,7 @@ class Engine:
         if self.sb.period and self.sb.period != self.last_period:
             if self.last_period is not None:       # changement de côté à chaque période
                 self.pressure.reset_side()
+                self.defends = {}
                 self.rec.event(game_t, "periode", periode=self.sb.period)
             self.last_period = self.sb.period
         if self.sb.score and self.sb.score != self.last_score:
@@ -873,6 +877,7 @@ class Engine:
             wp = cv2.perspectiveTransform(feet, H).reshape(-1, 2)
             for d, (x, y) in zip(dets, wp):
                 d["world"] = (float(x), float(y)) if self.rink.inside(x, y, 1.5) else None
+        self._detect_goalies(dets, now, game_t)
         self._persist_ids(dets, now)
         if self.mode == "players":            # joueur choisi reconnu à sa position : on le suit
             for d in dets:
@@ -1049,6 +1054,70 @@ class Engine:
         self.validated = {t: k for t, k in self.validated.items() if t in seen_now or t in self.known}
         vis = {(d["side"], d["num"]) for d in dets if d["num"]}
         self.recent_lost = {m["key"] for m in self.known.values() if m["key"] not in vis}
+
+    def _detect_goalies(self, dets, now, game_t):
+        """Cages : sur la ligne de but, au centre. Un joueur qui reste dans les ~3 m devant une
+        cage plus de 2 s est le gardien de son équipe : il reçoit le numéro du gardien en jeu
+        (feuille FFHG). On en déduit aussi la cage défendue par chaque équipe."""
+        gx = self.rink.goal_x
+        for d in dets:
+            w = d.get("world")
+            t = d["tid"]
+            if w is None or t < 0 or d["side"] is None:
+                continue
+            near = None
+            for s in (-1, 1):
+                dx = (s * gx - w[0]) * s                     # > 0 : devant la cage, côté glace
+                if -0.8 < dx < 3.2 and abs(w[1]) < 2.2:
+                    near = s
+            g = self.goalie_track.setdefault(t, dict(n=0, side=None, t0=now))
+            if near is None:
+                g["n"] = max(0, g["n"] - 1)
+                continue
+            g["n"] += 1
+            if g["side"] != near:
+                g["side"], g["t0"] = near, now
+            if g["n"] >= 12 and now - g["t0"] > 2.0:          # ~2 s devant la même cage
+                self.defends[d["side"]] = near
+                d["goalie"] = True
+                if self.match and t not in self.votes.manual:
+                    num = self.match.goalie_at(self._side_key(d["side"]), game_t)
+                    if num and self.validated.get(t) != (d["side"], num):
+                        self.validated[t] = (d["side"], num)
+                        d["num"] = num
+                        for o, k in list(self.validated.items()):    # un seul gardien de ce numéro
+                            if o != t and k == (d["side"], num) and o not in self.votes.manual:
+                                self.validated.pop(o, None)
+                        if (d["side"], num) not in self.goalie_logged:
+                            self.goalie_logged.add((d["side"], num))
+                            self.log(f"[gardien] {self._name(d['side'])} #{num} "
+                                     f"{self._roster(d['side']).get(num, {}).get('short', '')} devant sa cage")
+        if self.defends.get("our") is not None:
+            # sens du jeu connu par la cage défendue : la jauge de pression n'a plus à le deviner
+            self.pressure.defend_votes[:] = 0
+            self.pressure.defend_votes[0 if self.defends["our"] < 0 else 1] = 50
+
+    def cages_px(self, H):
+        """Contour des deux cages à l'écran (pour l'overlay), si la patinoire est repérée."""
+        if H is None or self.cam is None:
+            return None
+        from autocalib import camera_from_params
+        K, R, C = camera_from_params(np.r_[self.cam.center, self.cam.q], self.size)
+        gx, hw, hh, dp = self.rink.goal_x, 0.915, 1.22, 1.12
+        out = []
+        W, Hh = self.size
+        for s in (-1, 1):
+            x = s * gx
+            pts = np.array([[x, -hw, 0], [x, -hw, hh], [x, hw, hh], [x, hw, 0],
+                            [x + s * dp, hw, 0], [x + s * dp, -hw, 0], [x, -hw, 0]], float)
+            Xc = (pts - C) @ R.T
+            if (Xc[:, 2] <= 0.5).any():
+                continue
+            uv = (Xc @ K.T)[:, :2] / Xc[:, 2:3]
+            if (uv[:, 0] < -0.2 * W).all() or (uv[:, 0] > 1.2 * W).all():
+                continue
+            out.append([[round(u / W, 4), round(v / Hh, 4)] for u, v in uv])
+        return out
 
     def _smooth_pose(self, dets, now, a=0.55, hold=0.35):
         """Lissage du squelette par joueur suivi : chaque point est moyenné avec sa position
@@ -1424,7 +1493,7 @@ class Engine:
                 continue
             k = d.get("kin")
             p = dict(tid=int(d["tid"]), box=[round(x1 / W, 4), round(y1 / Hh, 4), round(x2 / W, 4), round(y2 / Hh, 4)],
-                     side=side, num=num)
+                     side=side, num=num, goalie=bool(d.get("goalie")))
             kp = d.get("kp")
             if kp is not None:
                 p["kp"] = [[round(float(x) / W, 4), round(float(y) / Hh, 4)] if c > 0.35 else None for x, y, c in kp]
@@ -1447,7 +1516,7 @@ class Engine:
                 p["dist"] = round(k.dist)
             players.append(p)
         msg = dict(type="state", mode=self.mode, focus=self.focus, fps=round(self.fps, 1), paused=self.paused,
-                   ts=round(self.cap_ts, 3),
+                   ts=round(self.cap_ts, 3), cages=self.cages_px(self._last_H),
                    status=dict(calib=self.calib_state if self.cam is None else ("ok" if calibrated else "perdu"),
                                match=(f"{self.match.short['home']} / {self.match.short['away']}" if self.match else None),
                                sides=len(self.cluster_side) == 2, colors=self.clf_ready,

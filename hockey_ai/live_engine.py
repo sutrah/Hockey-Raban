@@ -296,6 +296,8 @@ class Engine:
                                    else getattr(self.feed, "mid", name)))
         self.memory = MatchMemory(os.path.join(HERE, "matchs", f"memoire_{mid}.json"), self.log)
         self.mem_key = None
+        self.mem_votes = {}
+        self.mem_restored = 0
         self.last_score = None
         self.calib_t = 0.0
         self.last_cluster = {}
@@ -635,57 +637,79 @@ class Engine:
         return gs, 0.0, since
 
     def _restore_from_memory(self, dets, now):
-        """Remet les identités enregistrées pour cet instant (relecture du même match)."""
+        """Remet les identités enregistrées (annotation, clics des visionnages précédents).
+
+        1. recalage dans le temps : on essaie les décalages de -1 s à +1 s autour du chrono lu
+           et on garde celui où la disposition des joueurs colle le mieux ;
+        2. association globale (tous les joueurs à la fois), refus des cas ambigus ;
+        3. un nom n'est posé (ou changé) qu'après 2 confirmations concordantes."""
         tc = self.timecode(now)
         if tc is None or not self.memory.frames:
             return
-        entries = self.memory.lookup(*tc)
-        if not entries:
-            return
+        from scipy.optimize import linear_sum_assignment
+        from live_memory import Q
         W, Hh = self.size
-        session_manual = {(self.manual_side.get(t), n) for t, n in self.votes.manual.items()}
         pts = []
         for d in dets:
             if d["tid"] < 0 or d["tid"] in self.votes.manual or d["cluster"] == REF:
                 continue
             x1, y1, x2, y2 = d["box"]
-            pts.append((d, ((x1 + x2) / 2 / W, y2 / Hh), (y2 - y1) / Hh))
-        # regroupe les entrées par identité, garde la meilleure (main récente > auto)
-        by_id = {}
-        for en in entries:
-            if en[1]:                                    # entrées sans nom : ignorées
-                by_id.setdefault((en[0], en[1]), []).append(en)
-        cands = []
-        for ident, ens in by_id.items():
-            if ident in session_manual:                  # déjà fixé à la main dans cette séance
+            pts.append((d, np.array([(x1 + x2) / 2 / W, y2 / Hh]), max((y2 - y1) / Hh, 0.02)))
+        if not pts:
+            return
+        session_manual = {(self.manual_side.get(t), n) for t, n in self.votes.manual.items()}
+        gs, frac, stop = tc
+        base = int(round((gs + frac) * Q))
+        suffix = "s" + str(int(stop * 2)) if (stop is not None and stop > 0.6) else ""
+        best = None
+        for off in range(-4, 5):
+            ens = self.memory.frames.get(str(base + off) + suffix, [])
+            by_id = {}
+            for en in ens:
+                if en[1] and (en[0], en[1]) not in session_manual:
+                    by_id.setdefault((en[0], en[1]), []).append(en)
+            if not by_id:
                 continue
-            en = MatchMemory.best_identity(ens)
-            for d, (x, y), h in pts:
-                if d["side"] and d["side"] != en[0]:
-                    continue
-                dist = np.hypot(x - en[2], y - en[3])
-                if dist < max(0.6 * h, 0.015):
-                    cands.append((dist, ident, en, d))
-        used_id, used_det = set(), set()
-        # main avant auto ; entre deux identifications à la main, la plus récente l'emporte
-        for dist, ident, en, d in sorted(cands, key=lambda c: (c[2][5] != "main", -c[2][6], c[0])):
-            if ident in used_id or d["tid"] in used_det:
+            ids = list(by_id)
+            ref = [MatchMemory.best_identity(by_id[i]) for i in ids]
+            C = np.full((len(pts), len(ids)), 9.0)
+            for a, (d, p, h) in enumerate(pts):
+                for b, en in enumerate(ref):
+                    if d["side"] and d["side"] != en[0]:
+                        continue
+                    C[a, b] = np.linalg.norm(p - np.array(en[2:4])) / h      # en hauteurs de joueur
+            ra, cb = linear_sum_assignment(C)
+            ok = [(a, b) for a, b in zip(ra, cb) if C[a, b] < 0.8]
+            if not ok:
                 continue
-            cur = self.validated.get(d["tid"])
-            if cur == ident:
-                used_id.add(ident); used_det.add(d["tid"])
+            score = (len(ok), -float(np.mean([C[a, b] for a, b in ok])))
+            if best is None or score > best[0]:
+                best = (score, ok, C, ids, ref)
+        if best is None:
+            return
+        _, ok, C, ids, ref = best
+        for a, b in ok:
+            row = np.sort(C[a])
+            if len(row) > 1 and row[1] < 1.6 * row[0] + 0.15:
+                continue                                  # deux candidats presque aussi proches : ambigu
+            d = pts[a][0]
+            t, ident = d["tid"], ids[b]
+            v = self.mem_votes.setdefault(t, Counter())
+            v[ident] += 2 if ref[b][5] == "main" else 1
+            top, n = v.most_common(1)[0]
+            if n < 2 or n < 0.7 * sum(v.values()) or top != ident:
                 continue
-            if cur is not None and en[5] != "main":
-                continue                                 # une identité auto n'écrase rien
-            used_id.add(ident); used_det.add(d["tid"])
+            if self.validated.get(t) == ident:
+                continue
             side, num = ident
-            self.validated[d["tid"]] = (side, num)
-            if en[5] == "main":
-                self.votes.manual[d["tid"]] = num
-                self.manual_side[d["tid"]] = side
-            for t, k in list(self.validated.items()):    # un numéro, un seul joueur
-                if t != d["tid"] and k == ident and t not in self.votes.manual:
-                    self.validated.pop(t, None)
+            self.validated[t] = (side, num)
+            self.mem_restored += 1
+            if ref[b][5] == "main":
+                self.votes.manual[t] = num
+                self.manual_side[t] = side
+            for o, k in list(self.validated.items()):    # un numéro, un seul joueur
+                if o != t and k == ident and o not in self.votes.manual:
+                    self.validated.pop(o, None)
 
     def _record_memory(self, dets, now):
         tc = self.timecode(now)
@@ -985,6 +1009,9 @@ class Engine:
             ident = sum(1 for d in dets if d["num"])
             lum = float(frame[::8, ::8].mean())
             loc += f" · nouvelles pistes {self.new_tracks}/10 s"
+            if self.memory.frames:
+                loc += f" · mémoire : {self.mem_restored} noms remis"
+                self.mem_restored = 0
             if self.timing:
                 loc += " · temps/image : " + ", ".join(f"{k} {v:.0f} ms" for k, v in self.timing.items())
             self.new_tracks = 0

@@ -85,6 +85,27 @@ py live_engine.py --match 84389
 - **Overlay** : le moteur ignore la zone des panneaux, mais les étiquettes au-dessus des joueurs
   sont visibles à l'écran : garde-les petites (Alt+H pour les estomper).
 
+## Annoter un extrait (3 minutes) pour rendre l'outil plus précis
+
+1. Capture : lance le replay (ou le direct) et le moteur avec l'option `--annoter` :
+
+   ```bash
+   py live_engine.py --match 84389 --annoter 180
+   ```
+
+   Une image est enregistrée toutes les 1,5 s pendant 180 s, avec le time code du bandeau et
+   les joueurs détectés (dans `annotations/`, sur ton PC uniquement).
+2. Annotation : `py annoter.py` ouvre une page dans le navigateur.
+   - clique un joueur encadré et choisis son nom (ou « n° inconnu », « Arbitre », « Pas un joueur ») ;
+   - trace un cadre autour d'un joueur oublié par le détecteur ;
+   - le nom se propage aux autres images du même joueur (pointillé = proposé) : corrige ce qui est faux ;
+   - flèches ← → pour changer d'image ; tout est enregistré automatiquement.
+3. **Exporter** (bouton en haut à droite) :
+   - les identités vont dans la mémoire du match : à la prochaine lecture, les noms collent à la
+     vidéo d'après le time code ;
+   - vignettes pour `py train_numeros.py` (reconnaissance des joueurs) et pour un futur
+     entraînement des équipes et du détecteur (`dataset_equipes/`, `dataset_detection/`).
+
 ## Réglages utiles
 
 | Option | Rôle |

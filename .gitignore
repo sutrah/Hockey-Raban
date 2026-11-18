@@ -9,3 +9,6 @@ hockey_ai/apercu_capture.jpg
 hockey_ai/dataset_numeros/
 hockey_ai/modeles/
 validation/
+hockey_ai/annotations/
+hockey_ai/dataset_equipes/
+hockey_ai/dataset_detection/

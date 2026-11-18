@@ -310,6 +310,10 @@ class Engine:
         self.contra = {}
         self.prev_small = None
         self.collect_next = {}
+        self.annot_dir = None
+        self.annot_t0 = None
+        self.annot_last = 0.0
+        self.annot_done = False
         self.track_hist = {}
         self.ref_hits = {}
         self.ref_obs = {}
@@ -900,6 +904,8 @@ class Engine:
                         self.validated[d["tid"]] = (d["side"], num)      # validé : plus de lecture
 
         self._record_memory(dets, now)
+        if self.a.annoter:
+            self._capture_annotation(frame, dets, now)
         if self.a.collecte:
             self._collect(frame, dets, now)
 
@@ -1392,6 +1398,46 @@ class Engine:
         cv2.putText(v, txt, (20, v.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
         return cv2.resize(v, None, fx=0.6, fy=0.6)
 
+    def _capture_annotation(self, frame, dets, now):
+        """Images à annoter (option --annoter) : 1 toutes les 1,5 s pendant la durée demandée,
+        avec le time code du bandeau et les joueurs détectés (pistes de suivi), dans
+        annotations/<match>/<séance>/. Seules images enregistrées par l'outil, à la demande."""
+        if self.annot_dir is None:
+            if self.annot_t0 is None:
+                self.annot_t0 = now
+            mid = os.path.basename(self.memory.path).replace("memoire_", "").replace(".json", "")
+            self.annot_dir = os.path.join(HERE, "annotations", mid, time.strftime("%Y%m%d_%H%M%S"))
+            os.makedirs(self.annot_dir, exist_ok=True)
+            meta = dict(match=self.match.summary() if self.match else None, match_id=mid,
+                        memory=os.path.basename(self.memory.path), our=self.match.our if self.match else None)
+            with open(os.path.join(self.annot_dir, "meta.json"), "w") as f:
+                json.dump(meta, f, ensure_ascii=False)
+            self.annot_frames = []
+            self.log(f"[annoter] capture de {self.a.annoter:.0f} s dans {self.annot_dir}")
+        if now - self.annot_t0 > self.a.annoter:
+            if not self.annot_done:
+                self.annot_done = True
+                self.log(f"[annoter] terminé : {len(self.annot_frames)} images. Lance maintenant : py annoter.py")
+            return
+        if now - self.annot_last < 1.5:
+            return
+        self.annot_last = now
+        n = len(self.annot_frames) + 1
+        name = f"image_{n:04d}.jpg"
+        cv2.imwrite(os.path.join(self.annot_dir, name), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        tc = self.timecode(now)
+        H, W = frame.shape[:2]
+        rec = dict(file=name, t=round(now - self.annot_t0, 2), size=[W, H],
+                   tc=(list(tc) if tc else None), key=(tc_key(*tc) if tc else None), dets=[])
+        for d in dets:
+            rec["dets"].append(dict(tid=int(d["tid"]), box=[round(float(v), 1) for v in d["box"]],
+                                    kp=([[round(float(x), 1), round(float(y), 1), round(float(c), 2)] for x, y, c in d["kp"]]
+                                        if d.get("kp") is not None else None),
+                                    side=d.get("side"), num=d.get("num")))
+        self.annot_frames.append(rec)
+        with open(os.path.join(self.annot_dir, "frames.json"), "w") as f:
+            json.dump(dict(frames=self.annot_frames), f)
+
     def _collect(self, frame, dets, now):
         """Vignettes du dos (pas de vidéo) des joueurs nommés par un clic du coach : étiquettes
         sûres pour entraîner plus tard un lecteur de numéros spécialisé. 1 vignette/s par
@@ -1721,6 +1767,9 @@ def main():
     ap.add_argument("--collecte", action="store_true",
                     help="garde des vignettes du dos des joueurs identifiés par clic (pour entraîner "
                          "un lecteur de numéros) dans dataset_numeros/")
+    ap.add_argument("--annoter", type=float, default=0, metavar="SECONDES",
+                    help="enregistre une image toutes les 1,5 s pendant SECONDES (avec time code et joueurs "
+                         "détectés) pour les annoter ensuite avec annoter.py")
     ap.add_argument("--apercu", action="store_true",
                     help="diagnostic : écrit apercu_capture.jpg (ce que voit le moteur) toutes les 10 s")
     ap.add_argument("--gt", default=None, help=argparse.SUPPRESS)

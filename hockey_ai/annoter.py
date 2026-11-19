@@ -71,6 +71,20 @@ class Session:
         le temps pour la même piste (précédente d'abord). -> {file: {tid: (lab, explicite?)}}"""
         order = [fr["file"] for fr in self.frames]
         exp = self.labels.get("explicit", {})
+        # coupures (touche C) : la piste change de joueur à partir de cette image
+        cuts = {}
+        for i, fr in enumerate(self.frames):
+            for t in self.labels.get("cuts", {}).get(fr["file"], []):
+                cuts.setdefault(t, []).append(i)
+
+        def seg(t, i):
+            a, b = 0, float("inf")
+            for c in cuts.get(t, []):
+                if a < c <= i:
+                    a = c
+                if i < c < b:
+                    b = c
+            return a, b
         per_tid = {}
         for i, fr in enumerate(self.frames):
             for d in fr["dets"]:
@@ -86,7 +100,8 @@ class Session:
                 if lab:
                     res[t] = (lab, True)
                     continue
-                cands = per_tid.get(t, [])
+                a, b = seg(t, i)
+                cands = [c for c in per_tid.get(t, []) if a <= c[0] < b]
                 prev = [c for c in cands if c[0] <= i]
                 nxt = [c for c in cands if c[0] > i]
                 pick = prev[-1] if prev else (nxt[0] if nxt else None)

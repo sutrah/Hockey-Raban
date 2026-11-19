@@ -52,6 +52,9 @@
   <div style="margin-top:6px">Joueur oublié : <b>trace un cadre</b> autour de lui en glissant la souris.</div>
   <div style="margin-top:6px">Faux positif (public, reflet, poteau…) : survole le cadre et appuie sur <kbd>X</kbd>
     (ou « ✕ Pas un joueur ») : il est écarté sur toutes les images de la même piste.</div>
+  <div style="margin-top:6px">Un nom passe sur un autre joueur à partir d'une image (la piste a changé
+    de joueur) : sur la <b>première image fausse</b>, survole le cadre, appuie sur <kbd>C</kbd> (✂ couper)
+    puis donne le bon nom. Les images d'avant gardent l'ancien nom. <kbd>C</kbd> à nouveau annule la coupure.</div>
   <div style="margin-top:6px"><kbd>←</kbd> <kbd>→</kbd> changer d'image · <kbd>Suppr</kbd> effacer l'étiquette survolée ·
     enregistrement automatique.</div>
   <h3>LÉGENDE</h3>
@@ -68,7 +71,7 @@
   const data = await (await fetch("/api/data")).json();
   const frames = data.frames, meta = data.meta;
   let labels = data.labels || {};
-  labels.explicit = labels.explicit || {}; labels.extra = labels.extra || {};
+  labels.explicit = labels.explicit || {}; labels.extra = labels.extra || {}; labels.cuts = labels.cuts || {};
   const m = meta.match;
   const our = meta.our || "home", them = our === "home" ? "away" : "home";
   const roster = m ? { our: m.roster[our], them: m.roster[them] } : { our: [], them: [] };
@@ -83,6 +86,10 @@
 
   // ---------------------------------------------- propagation (même règle que l'export)
   function resolved() {
+    // coupures (touche C) : la piste change de joueur à partir de cette image -> pas de propagation à travers
+    const cuts = {};
+    frames.forEach((fr, i) => ((labels.cuts || {})[fr.file] || []).forEach((t) => (cuts[t] = cuts[t] || []).push(i)));
+    const seg = (t, i) => { let a = 0, b = Infinity; (cuts[t] || []).forEach((c) => { if (c <= i && c > a) a = c; if (c > i && c < b) b = c; }); return [a, b]; };
     const per = {};
     frames.forEach((fr, i) => fr.dets.forEach((d) => {
       const l = (labels.explicit[fr.file] || {})[d.tid];
@@ -94,7 +101,8 @@
       fr.dets.forEach((d) => {
         const l = (labels.explicit[fr.file] || {})[d.tid];
         if (l) { r[d.tid] = [l, true]; return; }
-        const c = per[d.tid] || [];
+        const [a, b] = seg(d.tid, i);
+        const c = (per[d.tid] || []).filter((x) => x[0] >= a && x[0] < b);
         const prev = c.filter((x) => x[0] <= i), nxt = c.filter((x) => x[0] > i);
         const pick = prev.length ? prev[prev.length - 1] : (nxt.length ? nxt[0] : null);
         if (pick) r[d.tid] = [pick[1], false];
@@ -156,6 +164,9 @@
       const tw = ctx.measureText(txt).width;
       ctx.fillStyle = "rgba(10,14,22,.85)"; ctx.fillRect(x1, y1 - 18, tw + 8, 17);
       ctx.fillStyle = COL[key] || COL.none; ctx.fillText(txt, x1 + 4, y1 - 5);
+      if (it.kind === "det" && ((labels.cuts || {})[frames[idx].file] || []).includes(it.tid)) {
+        ctx.fillStyle = "#ff5c5c"; ctx.font = "700 16px sans-serif"; ctx.fillText("✂ coupé", x1 + 2, y2 + 16);
+      }
     }
     if (drag && drag.moved) {
       ctx.strokeStyle = "#fff"; ctx.setLineDash([4, 4]); ctx.lineWidth = 2;
@@ -250,6 +261,12 @@
     if (e.key === "ArrowRight" || e.key === "d") { idx = Math.min(frames.length - 1, idx + 1); load(); }
     if (e.key === "ArrowLeft" || e.key === "a") { idx = Math.max(0, idx - 1); load(); }
     if (e.key === "Escape") hideMenu();
+    if ((e.key === "c" || e.key === "C") && hover && hover.kind === "det") {   // C : la piste change de joueur ici
+      const f = frames[idx].file, arr = labels.cuts[f] = labels.cuts[f] || [];
+      const k = arr.indexOf(hover.tid);
+      if (k >= 0) arr.splice(k, 1); else arr.push(hover.tid);
+      save();
+    }
     if ((e.key === "x" || e.key === "X") && hover) {     // X : faux positif (pas un joueur)
       const fr = frames[idx];
       if (hover.kind === "det") { labels.explicit[fr.file] = labels.explicit[fr.file] || {}; labels.explicit[fr.file][hover.tid] = { off: true }; }

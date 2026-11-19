@@ -35,6 +35,7 @@ from rink import PRESETS, Rink
 from teams import REF, UNK, TeamClassifier, jersey_feature, kit_features, otsu_threshold, referee_score
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+VERSION = "2026-11-18 v5 (mémoire au même instant, arbitres en vert)"
 PORT = 8765
 # dimensions connues : plus besoin de les deviner (1 800 m² = 60 x 30 m confirmé pour la Rïnkla)
 KNOWN_RINKS = {"rinkla": "iihf"}
@@ -785,7 +786,7 @@ class Engine:
     # ---------------------------------------------------------------- boucle
     def run(self):
         self.hub.start()
-        self.log(f"[ok] moteur prêt · overlay sur ws://127.0.0.1:{self.a.port} · Ctrl+C pour arrêter")
+        self.log(f"[ok] moteur prêt · version {VERSION} · overlay sur ws://127.0.0.1:{self.a.port} · Ctrl+C pour arrêter")
         if self.a.source:
             self._new_size()
         prev = time.time()

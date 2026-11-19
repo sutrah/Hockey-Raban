@@ -52,11 +52,68 @@ class Session:
             self.frames = json.load(f)["frames"]
         with open(os.path.join(folder, "meta.json")) as f:
             self.meta = json.load(f)
+        self._colors()
         self.labels_path = os.path.join(folder, "labels.json")
         self.labels = {"explicit": {}, "extra": {}}      # explicit[file][tid] = {side,num,ref} ; extra[file] = [ {box,...} ]
         if os.path.exists(self.labels_path):
             with open(self.labels_path) as f:
                 self.labels = json.load(f)
+
+    def _colors(self):
+        """Part sombre du torse de chaque cadre (maillot noir de Brest / blanc d'Orléans),
+        calculée une fois et gardée dans couleurs.json (le travail d'annotation n'est pas touché)."""
+        from teams import kit_features
+        path = os.path.join(self.folder, "couleurs.json")
+        cache = {}
+        if os.path.exists(path):
+            try:
+                cache = json.load(open(path))
+            except Exception:
+                cache = {}
+        changed = False
+        for fr in self.frames:
+            c = cache.get(fr["file"])
+            if c is None:
+                img = cv2.imread(os.path.join(self.folder, fr["file"]))
+                c = {}
+                for d in fr["dets"]:
+                    f = kit_features(img, d["box"]) if img is not None else None
+                    c[str(d["tid"])] = None if f is None else round(f[2], 3)
+                cache[fr["file"]] = c
+                changed = True
+            for d in fr["dets"]:
+                d["dark"] = c.get(str(d["tid"]))
+        if changed:
+            with open(path, "w") as f:
+                json.dump(cache, f)
+
+    def color_sides(self):
+        """Côté (our/them) suggéré par la couleur du maillot, appris sur les cadres nommés à la main.
+        -> {(i, tid): côté ou None}"""
+        exp = self.labels.get("explicit", {})
+        vals = {"our": [], "them": []}
+        for fr in self.frames:
+            for d in fr["dets"]:
+                lab = exp.get(fr["file"], {}).get(str(d["tid"]))
+                if lab and lab.get("side") in vals and not lab.get("ref") and not lab.get("off") and d.get("dark") is not None:
+                    vals[lab["side"]].append(d["dark"])
+        out = {}
+        if len(vals["our"]) < 3 or len(vals["them"]) < 3:
+            return out
+        import statistics
+        mo, mt = statistics.median(vals["our"]), statistics.median(vals["them"])
+        if abs(mo - mt) < 0.25:
+            return out
+        mid, gap = (mo + mt) / 2, 0.15 * abs(mo - mt) + 0.05
+        dark_side = "our" if mo > mt else "them"
+        light_side = "them" if dark_side == "our" else "our"
+        for i, fr in enumerate(self.frames):
+            for d in fr["dets"]:
+                v = d.get("dark")
+                if v is None:
+                    continue
+                out[(i, d["tid"])] = dark_side if v > mid + gap else (light_side if v < mid - gap else None)
+        return out
 
     def save(self, labels):
         self.labels = labels
@@ -91,6 +148,20 @@ class Session:
                 lab = exp.get(fr["file"], {}).get(str(d["tid"]))
                 if lab:
                     per_tid.setdefault(d["tid"], []).append((i, lab))
+        # la couleur du maillot arrête la propagation : un nom de Brest ne passe jamais sur un
+        # maillot d'Orléans (deux pistes qui ont échangé leurs joueurs en se croisant)
+        col = self.color_sides()
+        seen = {}
+        for i, fr in enumerate(self.frames):
+            for d in fr["dets"]:
+                seen.setdefault(d["tid"], []).append(i)
+
+        def clean(t, j, i, lab):
+            side = lab.get("side")
+            if lab.get("ref") or lab.get("off") or side not in ("our", "them"):
+                return True
+            lo, hi = min(i, j), max(i, j)
+            return not any(col.get((k, t)) not in (None, side) for k in seen.get(t, []) if lo <= k <= hi)
         out = {}
         for i, fr in enumerate(self.frames):
             res = {}
@@ -104,7 +175,11 @@ class Session:
                 cands = [c for c in per_tid.get(t, []) if a <= c[0] < b]
                 prev = [c for c in cands if c[0] <= i]
                 nxt = [c for c in cands if c[0] > i]
-                pick = prev[-1] if prev else (nxt[0] if nxt else None)
+                pick = None
+                if prev and clean(t, prev[-1][0], i, prev[-1][1]):
+                    pick = prev[-1]
+                elif nxt and clean(t, nxt[0][0], i, nxt[0][1]):
+                    pick = nxt[0]
                 if pick:
                     res[t] = (pick[1], False)
             out[order[i]] = res

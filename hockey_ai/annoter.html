@@ -85,6 +85,24 @@
   const cv = $("cv"), ctx = cv.getContext("2d"), menu = $("menu");
 
   // ---------------------------------------------- propagation (même règle que l'export)
+  function colorSides() {
+    const vals = { our: [], them: [] }, out = {};
+    frames.forEach((fr) => fr.dets.forEach((d) => {
+      const l = (labels.explicit[fr.file] || {})[d.tid];
+      if (l && vals[l.side] && !l.ref && !l.off && d.dark != null) vals[l.side].push(d.dark);
+    }));
+    if (vals.our.length < 3 || vals.them.length < 3) return out;
+    const med = (a) => { const b = [...a].sort((x, y) => x - y), m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; };
+    const mo = med(vals.our), mt = med(vals.them);
+    if (Math.abs(mo - mt) < 0.25) return out;
+    const mid = (mo + mt) / 2, gap = 0.15 * Math.abs(mo - mt) + 0.05;
+    const darkS = mo > mt ? "our" : "them", lightS = darkS === "our" ? "them" : "our";
+    frames.forEach((fr, i) => fr.dets.forEach((d) => {
+      if (d.dark == null) return;
+      out[i + ":" + d.tid] = d.dark > mid + gap ? darkS : (d.dark < mid - gap ? lightS : null);
+    }));
+    return out;
+  }
   function resolved() {
     // coupures (touche C) : la piste change de joueur à partir de cette image -> pas de propagation à travers
     const cuts = {};
@@ -95,6 +113,15 @@
       const l = (labels.explicit[fr.file] || {})[d.tid];
       if (l) (per[d.tid] = per[d.tid] || []).push([i, l]);
     }));
+    // couleur du maillot (apprise sur les cadres nommés) : un nom de Brest ne se propage jamais
+    // sur un maillot d'Orléans, et inversement (pistes qui ont échangé leurs joueurs)
+    const col = colorSides(), seen = {};
+    frames.forEach((fr, i) => fr.dets.forEach((d) => (seen[d.tid] = seen[d.tid] || []).push(i)));
+    const clean = (t, j, i, l) => {
+      if (l.ref || l.off || (l.side !== "our" && l.side !== "them")) return true;
+      const lo = Math.min(i, j), hi = Math.max(i, j);
+      return !(seen[t] || []).some((k) => k >= lo && k <= hi && col[k + ":" + t] && col[k + ":" + t] !== l.side);
+    };
     const out = {};
     frames.forEach((fr, i) => {
       const r = {};
@@ -104,7 +131,9 @@
         const [a, b] = seg(d.tid, i);
         const c = (per[d.tid] || []).filter((x) => x[0] >= a && x[0] < b);
         const prev = c.filter((x) => x[0] <= i), nxt = c.filter((x) => x[0] > i);
-        const pick = prev.length ? prev[prev.length - 1] : (nxt.length ? nxt[0] : null);
+        let pick = null;
+        if (prev.length && clean(d.tid, prev[prev.length - 1][0], i, prev[prev.length - 1][1])) pick = prev[prev.length - 1];
+        else if (nxt.length && clean(d.tid, nxt[0][0], i, nxt[0][1])) pick = nxt[0];
         if (pick) r[d.tid] = [pick[1], false];
       });
       out[fr.file] = r;

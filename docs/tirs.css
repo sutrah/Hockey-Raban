@@ -1,0 +1,17 @@
+.tb-f { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: end; margin: 0 0 14px; }
+.tb-f label { display: grid; gap: 2px; font-size: 12px; color: var(--ink2); min-width: 0; }
+.tb-f select { max-width: 210px; font-size: 14px; }
+.tb-v { display: grid; grid-template-columns: minmax(340px, 5fr) minmax(0, 7fr); gap: 14px; align-items: start; }
+.tb-v .card { margin: 0; min-width: 0; padding: 12px; }
+.tb-r svg { width: 100%; height: auto; display: block; }
+.tb-r g { cursor: default; }
+.tb-r g.vu .p { stroke: #000; stroke-width: .3; }
+.tb-l tr.vu td { background: var(--zone); }
+.tb-l table { font-size: 12.5px; } .tb-l th, .tb-l td { padding: 6px 5px; } .tb-l td { white-space: normal; }
+.tb-l td:nth-child(3), .tb-l td.n { white-space: nowrap; }
+.tb-p { display: inline-block; min-width: 24px; padding: 2px 4px; border-radius: 12px; color: #fff; font-style: normal; font-weight: 650; text-align: center; }
+.tb-leg { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--ink2); margin-top: 8px; }
+.tb-leg i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; }
+main.large { max-width: 1400px; }
+@media (max-width: 900px) { .tb-v { grid-template-columns: minmax(0, 1fr); } }
+@media print { .tb-f, .top, .foot { display: none; } .tb-v { grid-template-columns: 5fr 7fr; } @page { size: A4 landscape; margin: 10mm; } }

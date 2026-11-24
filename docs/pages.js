@@ -240,18 +240,21 @@ function pageLignes(ab) {
     <div class="card">${h2('Résultat', 'déduit')}<div id="res-lignes">${resLignes()}</div></div>`;
 }
 
-/* ---------- analyses vidéo par IA (à venir) ---------- */
+/* ---------- analyses vidéo ---------- */
 function pageVideo() {
-  return `<h1>Analyses vidéo IA</h1><p class="sub">En préparation</p>
-    <div class="card"><h2>Ce que cet onglet apportera</h2>
-    <p>Les feuilles de match disent qui a marqué, quand, et qui a été pénalisé. Elles ne disent pas comment le jeu s'est déroulé. Les statistiques qui manquent aujourd'hui seront tirées des vidéos des matchs, analysées par intelligence artificielle, puis affichées ici à côté des données FFHG.</p></div>
-    <div class="card"><h2>Statistiques prévues</h2>${cartes([
+  return `<div id="tirs"><p class="muted">Chargement de la carte des tirs…</p></div>
+    <details class="card"><summary>Autres analyses prévues</summary>${cartes([
       ['Entrées et sorties de zone', 'Réussies ou perdues, en contrôle ou par dégagement, par joueur et par ligne.'],
       ['Pertes et récupérations de palet', 'Où elles se produisent sur la glace et qui est concerné.'],
-      ['Localisation des tirs', 'D\'où partent les tirs pour et contre, et lesquels sont de vraies occasions.'],
+      ['Localisation des buts marqués', 'Même carte pour les buts de Brest, puis pour les adversaires.'],
       ['Temps de glace et lignes réelles', 'Qui joue avec qui et combien de temps, au lieu de le déduire des seuls buts.'],
-      ['Origine des buts', 'Ce qui s\'est passé dans les secondes qui précèdent chaque but marqué ou encaissé.']], 'i')}</div>
-    <div class="card"><h2>Où en est-on</h2><p>Rien n'est encore calculé à partir de la vidéo : les autres onglets reposent uniquement sur les feuilles de match. Cet onglet se remplira dès que les vidéos des matchs seront disponibles et analysées. D'ici là, les encarts marqués « déduit » ailleurs dans le site sont justement ceux que la vidéo permettra de vérifier.</p></div>`;
+      ['Origine des buts', 'Ce qui s\'est passé dans les secondes qui précèdent chaque but marqué ou encaissé.']], 'i')}</details>`;
+}
+
+function monterTirs() {
+  fetch('data/buts.json', { cache: 'no-cache' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(d => { const el = $('#tirs'); if (el) TirsBrest(el, d); })
+    .catch(() => { const el = $('#tirs'); if (el) el.innerHTML = '<p class="muted">Carte des tirs indisponible pour le moment.</p>'; });
 }
 
 /* ---------- accueil ---------- */
@@ -275,6 +278,8 @@ function route(garder) {
   const ab = page === 'equipe' ? arg.toUpperCase() : '';
   $('#app').innerHTML = accord(page === 'equipe' ? pageEquipe(ab) : page === 'fiche' ? pageFiche(arg.toUpperCase()) : page === 'debrief' ? pageDebrief(+arg || 0)
     : page === 'lignes' ? pageLignes(arg.toUpperCase()) : page === 'video' ? pageVideo() : pageAccueil());
+  $('#app').classList.toggle('large', page === 'video');
+  if (page === 'video') monterTirs();
   const cur = page === 'equipe' ? (ab === ME ? 'equipe' : '') : page;
   document.querySelectorAll('nav a').forEach(a => a.classList.toggle('on', a.dataset.nav === cur));
   $('#team-select').value = page === 'equipe' && ab !== ME ? ab : '';

@@ -24,7 +24,7 @@ window.TirsBrest = function (el, data) {
   <button type="button" data-raz>Effacer les filtres</button></div>
   <div class="tb-t"></div>
   <div class="tb-v"><div class="card tb-r"></div><div class="card tb-l"></div></div>
-  <p class="note">Positions pointées à la main sur la vidéo, puis converties en mètres. Le halo est la marge d’erreur de la position ; trait noir : pastille écartée pour rester lisible, le petit point est la vraie position. Sans halo et avec * dans le tableau : position ajustée à la main. Mis à jour le ${esc(data.maj)}.</p></div>`;
+  <p class="note">Positions pointées à la main sur la vidéo, puis converties en mètres. Le halo est la marge d’erreur de la position ; les pastilles trop proches sont légèrement écartées pour rester lisibles. Sans halo et avec * dans le tableau : position ajustée à la main. Mis à jour le ${esc(data.maj)}.</p></div>`;
   const $ = s => el.querySelector(s), V = {};
   document.querySelectorAll('.tb-tip').forEach(t => t.remove());       // une seule infobulle, même après changement d'onglet
   const tip = document.createElement('div');
@@ -74,9 +74,8 @@ window.TirsBrest = function (el, data) {
     <path d="M${c - .915} 4V3H${c + .915}V4" fill="none" stroke="#d33" stroke-width=".18"/>${rond(-7, 4.5)}${rond(7, 4.5)}${rond(-7, .3)}${rond(7, .3)}`;
     const P = ecarter(L, c, W);
     L.forEach((b, i) => {
-      const { x0, y0, x, y } = P[i], f = sit(b)[2], loin = Math.hypot(x - x0, y - y0) > .08;
+      const { x0, y0, x, y } = P[i], f = sit(b)[2];
       s += `<g data-n="${b.num}">${b.ajuste ? '' : `<circle cx="${x0}" cy="${y0}" r="${Math.min(4, b.marge || 0)}" fill="${f}" opacity=".12"/>`}
-      ${loin ? `<path d="M${x0} ${y0}L${x} ${y}" stroke="#222" stroke-width=".1"/><circle cx="${x0}" cy="${y0}" r=".17" fill="#222"/>` : ''}
       <circle class="p" cx="${x}" cy="${y}" r=".6" fill="${f}" stroke="#fff" stroke-width=".14"/>
       <text x="${x}" y="${y + .25}" font-size=".7" text-anchor="middle" fill="#fff" font-weight="600">${num(b)}</text></g>`;
     });

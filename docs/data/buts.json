@@ -1,5 +1,5 @@
 {
- "maj": "24/11/2026 14:48",
+ "maj": "24/11/2026 16:49",
  "matchs": [
   {
    "id": 84359,
@@ -12,6 +12,7 @@
     {
      "n": 1,
      "periode": 1,
+     "temps": 246,
      "reste": 954,
      "buteur": "VINALS Aurélien",
      "gardien": "GAILLARD Matthieu",
@@ -26,6 +27,7 @@
     {
      "n": 2,
      "periode": 3,
+     "temps": 3035,
      "reste": 565,
      "buteur": "GUSTAVSSON Melker",
      "gardien": "GAILLARD Matthieu",
@@ -40,6 +42,7 @@
     {
      "n": 3,
      "periode": 3,
+     "temps": 3379,
      "reste": 221,
      "buteur": "NADAUX Arthur",
      "gardien": "GAILLARD Matthieu",
@@ -54,6 +57,7 @@
     {
      "n": 4,
      "periode": 3,
+     "temps": 3547,
      "reste": 53,
      "buteur": "VINALS Ludovic",
      "gardien": "GAILLARD Matthieu",
@@ -78,6 +82,7 @@
     {
      "n": 1,
      "periode": 3,
+     "temps": 2761,
      "reste": 839,
      "buteur": "THOMM Nathan",
      "gardien": "GAILLARD Matthieu",
@@ -108,6 +113,7 @@
     {
      "n": 1,
      "periode": 2,
+     "temps": 1937,
      "reste": 463,
      "buteur": "PETROSIAN Tigran",
      "gardien": "GAILLARD Matthieu",
@@ -122,6 +128,7 @@
     {
      "n": 2,
      "periode": 2,
+     "temps": 2242,
      "reste": 158,
      "buteur": "JANSSON Jonathan",
      "gardien": "GAILLARD Matthieu",
@@ -136,6 +143,7 @@
     {
      "n": 3,
      "periode": 3,
+     "temps": 2802,
      "reste": 798,
      "buteur": "MAGUIN Thomas",
      "gardien": "GAILLARD Matthieu",
@@ -160,6 +168,7 @@
     {
      "n": 1,
      "periode": 1,
+     "temps": 394,
      "reste": 806,
      "buteur": "RENAULT Jules",
      "gardien": "GAILLARD Matthieu",
@@ -180,6 +189,7 @@
     {
      "n": 2,
      "periode": 3,
+     "temps": 2814,
      "reste": 786,
      "buteur": "GOUDARD Dwayne",
      "gardien": "GAILLARD Matthieu",
@@ -210,6 +220,7 @@
     {
      "n": 1,
      "periode": 1,
+     "temps": 21,
      "reste": 1179,
      "buteur": "LAPORTE Hugo",
      "gardien": "GAILLARD Matthieu",
@@ -230,6 +241,7 @@
     {
      "n": 2,
      "periode": 3,
+     "temps": 2885,
      "reste": 715,
      "buteur": "TUNIK Vladislav",
      "gardien": "GAILLARD Matthieu",
@@ -250,6 +262,7 @@
     {
      "n": 3,
      "periode": 4,
+     "temps": 3712,
      "reste": null,
      "buteur": "TUNIK Vladislav",
      "gardien": "GAILLARD Matthieu",
@@ -280,6 +293,7 @@
     {
      "n": 1,
      "periode": 1,
+     "temps": 336,
      "reste": 864,
      "buteur": "PLOUFFE-DUBE Daryk",
      "gardien": "GAILLARD Matthieu",
@@ -294,6 +308,7 @@
     {
      "n": 2,
      "periode": 1,
+     "temps": 387,
      "reste": 813,
      "buteur": "MANAVIAN Antonin",
      "gardien": "GAILLARD Matthieu",
@@ -318,6 +333,7 @@
     {
      "n": 1,
      "periode": 1,
+     "temps": 277,
      "reste": 923,
      "buteur": "WESTBERG-GREN Frans Gustaf",
      "gardien": "SCHWERDEL Mathys",
@@ -338,6 +354,7 @@
     {
      "n": 2,
      "periode": 1,
+     "temps": 1177,
      "reste": 23,
      "buteur": "RICOU Matteo",
      "gardien": "SCHWERDEL Mathys",
@@ -358,6 +375,7 @@
     {
      "n": 3,
      "periode": 2,
+     "temps": 1664,
      "reste": 736,
      "buteur": "GAMACHE Jérémy",
      "gardien": "SCHWERDEL Mathys",
@@ -378,6 +396,7 @@
     {
      "n": 4,
      "periode": 2,
+     "temps": 2071,
      "reste": 329,
      "buteur": "BEAU Pamphile",
      "gardien": "SCHWERDEL Mathys",
@@ -398,6 +417,7 @@
     {
      "n": 5,
      "periode": 3,
+     "temps": 3327,
      "reste": 273,
      "buteur": "RICOU Matteo",
      "gardien": "SCHWERDEL Mathys",
@@ -428,6 +448,7 @@
     {
      "n": 1,
      "periode": 2,
+     "temps": 1824,
      "reste": 576,
      "buteur": "MELEE Jonathan James",
      "gardien": "GAILLARD Matthieu",
@@ -448,6 +469,7 @@
     {
      "n": 2,
      "periode": 2,
+     "temps": 1912,
      "reste": 488,
      "buteur": "COMMUSSET Flavio",
      "gardien": "GAILLARD Matthieu",
@@ -468,6 +490,7 @@
     {
      "n": 3,
      "periode": 2,
+     "temps": 2333,
      "reste": 67,
      "buteur": "MELEE Jonathan James",
      "gardien": "GAILLARD Matthieu",
@@ -488,6 +511,7 @@
     {
      "n": 4,
      "periode": 3,
+     "temps": 3058,
      "reste": 542,
      "buteur": "FOURCADE Theo",
      "gardien": "GAILLARD Matthieu",
@@ -508,6 +532,7 @@
     {
      "n": 5,
      "periode": 3,
+     "temps": 3096,
      "reste": 504,
      "buteur": "SVINTSOV Pavel",
      "gardien": "GAILLARD Matthieu",

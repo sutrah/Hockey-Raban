@@ -1,5 +1,5 @@
 {
- "maj": "24/11/2026 17:20",
+ "maj": "24/11/2026 18:09",
  "matchs": [
   {
    "id": 84359,
@@ -17,12 +17,18 @@
      "buteur": "VINALS Aurélien",
      "gardien": "GAILLARD Matthieu",
      "situation": "EG",
-     "geste": "",
-     "action": "",
+     "geste": "tir frappé (slap)",
+     "action": "tir direct",
      "ecran": false,
      "devie": false,
-     "valide": false,
-     "distance": null
+     "valide": true,
+     "distance": 14.6,
+     "prof": 10.48,
+     "lat": 10.21,
+     "angle": 44,
+     "marge": 1.1,
+     "margeD": 0.5,
+     "ajuste": false
     },
     {
      "n": 2,
@@ -32,12 +38,18 @@
      "buteur": "GUSTAVSSON Melker",
      "gardien": "GAILLARD Matthieu",
      "situation": "INF1",
-     "geste": "",
-     "action": "",
+     "geste": "tir du poignet",
+     "action": "tir direct",
      "ecran": false,
      "devie": false,
-     "valide": false,
-     "distance": null
+     "valide": true,
+     "distance": 2.9,
+     "prof": 2.12,
+     "lat": 2.01,
+     "angle": 43,
+     "marge": 1.0,
+     "margeD": 0.3,
+     "ajuste": false
     },
     {
      "n": 3,
@@ -47,12 +59,18 @@
      "buteur": "NADAUX Arthur",
      "gardien": "GAILLARD Matthieu",
      "situation": "EG",
-     "geste": "",
-     "action": "",
+     "geste": "tir du poignet",
+     "action": "tir direct",
      "ecran": false,
      "devie": false,
-     "valide": false,
-     "distance": null
+     "valide": true,
+     "distance": 3.6,
+     "prof": 0.29,
+     "lat": 3.56,
+     "angle": 85,
+     "marge": 1.1,
+     "margeD": 0.7,
+     "ajuste": false
     },
     {
      "n": 4,
@@ -66,8 +84,14 @@
      "action": "",
      "ecran": false,
      "devie": false,
-     "valide": false,
-     "distance": null
+     "valide": true,
+     "distance": 3.0,
+     "prof": 2.81,
+     "lat": 1.18,
+     "angle": 23,
+     "marge": 1.3,
+     "margeD": 0.5,
+     "ajuste": false
     }
    ]
   },

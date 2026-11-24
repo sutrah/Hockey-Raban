@@ -1,5 +1,5 @@
 {
- "maj": "24/11/2026 16:49",
+ "maj": "24/11/2026 17:20",
  "matchs": [
   {
    "id": 84359,
@@ -302,8 +302,14 @@
      "action": "",
      "ecran": false,
      "devie": false,
-     "valide": false,
-     "distance": null
+     "valide": true,
+     "distance": 10.9,
+     "prof": 8.23,
+     "lat": -7.22,
+     "angle": 41,
+     "marge": 2.3,
+     "margeD": 0.8,
+     "ajuste": false
     },
     {
      "n": 2,
@@ -313,12 +319,18 @@
      "buteur": "MANAVIAN Antonin",
      "gardien": "GAILLARD Matthieu",
      "situation": "SUP1",
-     "geste": "",
-     "action": "",
+     "geste": "tir du poignet",
+     "action": "tir direct",
      "ecran": false,
      "devie": false,
-     "valide": false,
-     "distance": null
+     "valide": true,
+     "distance": 8.4,
+     "prof": 3.31,
+     "lat": -7.67,
+     "angle": 67,
+     "marge": 2.4,
+     "margeD": 0.8,
+     "ajuste": false
     }
    ]
   },

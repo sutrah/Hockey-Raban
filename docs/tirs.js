@@ -26,6 +26,27 @@ window.TirsBrest = function (el, data) {
   <div class="tb-v"><div class="card tb-r"></div><div class="card tb-l"></div></div>
   <p class="note">Positions pointées à la main sur la vidéo, puis converties en mètres. Le halo est la marge d’erreur de la position ; trait noir : pastille écartée pour rester lisible, le petit point est la vraie position ; bord vert : position ajustée à la main. Mis à jour le ${esc(data.maj)}.</p></div>`;
   const $ = s => el.querySelector(s), V = {};
+  document.querySelectorAll('.tb-tip').forEach(t => t.remove());       // une seule infobulle, même après changement d'onglet
+  const tip = document.createElement('div');
+  tip.className = 'tb-tip';
+  tip.hidden = true;
+  el.append(tip);
+  const rang = k => k + (k === 1 ? 're' : 'e');
+  function montrer(b, g) {
+    const t = b.temps != null ? b.temps : b.reste != null ? b.periode * 1200 - b.reste : null;
+    const quand = b.periode > 3 ? 'Prolongation' : `${b.periode === 1 ? '1er' : b.periode + 'e'} tiers`;
+    tip.innerHTML = `<b>${esc(b.buteur)}</b><span>${b.m.domicile ? 'Brest – ' + esc(adv(b.m)) : esc(adv(b.m)) + ' – Brest'}, ${jj(b.m.date)}</span>
+    <span>${quand}${t != null ? `, ${rang(Math.floor(t / 60) + 1)} minute` : ''}${b.reste != null ? ` (chrono ${hm(b.reste)})` : ''}</span>`;
+    tip.style.setProperty('--c', sit(b)[2]);
+    tip.hidden = false;
+    const r = g.querySelector('.p').getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
+    const haut = r.top - h - 8;
+    tip.style.left = Math.max(8, Math.min(innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + 'px';
+    tip.style.top = (haut > 8 ? haut : r.bottom + 8) + 'px';
+  }
+  const cacher = () => { tip.hidden = true; };
+  addEventListener('scroll', cacher, { passive: true });
+  el.addEventListener('click', e => { if (!e.target.closest('.tb-r g[data-n]')) cacher(); });
   el.querySelectorAll('[data-f]').forEach(s => { s.onchange = () => { V[s.dataset.f] = s.value; rendre(); }; });
   $('[data-raz]').onclick = () => { el.querySelectorAll('[data-f]').forEach(s => { s.value = ''; V[s.dataset.f] = ''; }); rendre(); };
 
@@ -54,7 +75,7 @@ window.TirsBrest = function (el, data) {
     const P = ecarter(L, c, W);
     L.forEach((b, i) => {
       const { x0, y0, x, y } = P[i], f = sit(b)[2], loin = Math.hypot(x - x0, y - y0) > .08;
-      s += `<g data-n="${b.num}"><title>N° ${num(b)} – ${esc(b.buteur)}, ${fr(b.distance)} m</title>${b.ajuste ? '' : `<circle cx="${x0}" cy="${y0}" r="${Math.min(4, b.marge || 0)}" fill="${f}" opacity=".12"/>`}
+      s += `<g data-n="${b.num}">${b.ajuste ? '' : `<circle cx="${x0}" cy="${y0}" r="${Math.min(4, b.marge || 0)}" fill="${f}" opacity=".12"/>`}
       ${loin ? `<path d="M${x0} ${y0}L${x} ${y}" stroke="#222" stroke-width=".1"/><circle cx="${x0}" cy="${y0}" r=".17" fill="#222"/>` : ''}
       <circle class="p" cx="${x}" cy="${y}" r=".6" fill="${f}" stroke="${b.ajuste ? '#0a8f2a' : '#fff'}" stroke-width=".14"/>
       <text x="${x}" y="${y + .25}" font-size=".7" text-anchor="middle" fill="#fff" font-weight="600">${num(b)}</text></g>`;
@@ -63,6 +84,7 @@ window.TirsBrest = function (el, data) {
   }
   const num = b => V.match ? b.n : b.num;
   function rendre() {
+    cacher();
     const F = tous.filter(b => (!V.match || String(b.m.id) === V.match) && (!V.lieu || b.m.domicile === (V.lieu === 'd')) && (!V.per || b.periode === +V.per)
       && (!V.sit || sit(b)[0] === V.sit) && (!V.gar || b.gardien === V.gar) && (!V.ges || b.geste === V.ges) && (!V.act || b.action === V.act));
     const L = F.filter(b => b.distance != null), d = L.map(b => b.distance).sort((a, b) => a - b), k = d.length;
@@ -79,8 +101,11 @@ window.TirsBrest = function (el, data) {
       `</tbody></table></div>${L.some(b => b.ajuste) ? '<p class="note">* position ajustée à la main</p>' : ''}` : '<p class="muted">Aucun but placé pour ces filtres.</p>';
     el.querySelectorAll('.tb-v [data-n]').forEach(e => {
       const on = v => el.querySelectorAll(`.tb-v [data-n="${e.dataset.n}"]`).forEach(q => q.classList.toggle('vu', v));
-      e.onmouseenter = e.onfocus = () => on(true);
-      e.onmouseleave = e.onblur = () => on(false);
+      const b = tous[e.dataset.n - 1], point = e.closest('.tb-r');
+      e.onmouseenter = () => { on(true); if (point) montrer(b, e); };
+      e.onmouseleave = () => { on(false); if (point) cacher(); };
+      if (point) e.onclick = () => montrer(b, e);                      // doigt sur téléphone
+      else { e.onfocus = () => on(true); e.onblur = () => on(false); }
     });
   }
   rendre();

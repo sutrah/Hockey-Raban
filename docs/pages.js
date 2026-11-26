@@ -140,6 +140,7 @@ function pageFiche(ab) {
       <h1>${esc(D.eq[me].nom_court)} <span class="muted">contre</span> ${esc(eq.nom_court)}</h1>
       <p class="sub">${M ? `${dateFr(M.date)} à ${heure(M.date)} · ${dom ? 'à domicile' : 'à l\'extérieur'} · ${esc(M.patinoire || '')}` : 'Pas de match programmé entre les deux équipes'}${rg(O) ? ` · ${esc(eq.nom_court)} ${rg(O)}<sup>e</sup>, ${esc(D.eq[me].nom_court)} ${rg(me)}<sup>e</sup> de la poule` : ''}</p>
       ${blocPoints(k)}
+      <div class="card zt" id="zones" data-o="${eq.abreviation}"></div>
       <div class="grid2"><div class="card">${h2('Nous contre eux', 'mesuré', `${profil(me).n} et ${Q.n} matchs`)}${rangs(comparer(me).filter(c => !/^(t2|premier|provm)/.test(c.k)), D.eq[me].nom_court, comparer(O), eq.nom_court)}</div>
       <div class="card">${h2('Leurs joueurs à surveiller', 'mesuré')}${barresJoueurs(top, x => fleche(F, x.id))}
         ${g[0] ? `<p class="lg"><b>Gardien :</b> ${g.slice(0, 2).map(x => `${esc(nomJ(x.id))}, ${x.tit} titularisation(s), ${f1(x.enc * 3600 / x.sec)} buts encaissés par match`).join(' ; ')}.</p>` : ''}</div></div>
@@ -251,6 +252,22 @@ function pageVideo() {
       ['Origine des buts', 'Ce qui s\'est passé dans les secondes qui précèdent chaque but marqué ou encaissé.']], 'i')}</details>`;
 }
 
+function monterZones(ab) {
+  let el = $('#zones');
+  if (!el && ab && D.ab[ab]) {                       // fiche équipe : encart ajouté avant « Lignes probables » (sinon à la fin)
+    el = document.createElement('div');
+    el.className = 'card zt'; el.id = 'zones';
+    const ref = [...document.querySelectorAll('#app .card')].find(c => /Lignes probables/.test(c.textContent.slice(0, 40)));
+    ref ? ref.before(el) : $('#app').append(el);
+  }
+  if (!el || !window.ZonesTir) return;
+  ZonesTir.donnees().then(d => {
+    if (!d || !document.body.contains(el)) return el && el.remove();
+    if (ab) return ZonesTir.equipe(el, d, ab, D.ab[ab].nom_court);
+    const me = moi(), O = el.dataset.o;
+    ZonesTir.fiche(el, d, D.eq[me].abreviation, D.eq[me].nom_court, O, D.ab[O] ? D.ab[O].nom_court : O);
+  });
+}
 function monterTirs() {
   fetch('data/buts.json', { cache: 'no-cache' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(d => { const el = $('#tirs'); if (el) TirsBrest(el, d); })
@@ -280,6 +297,7 @@ function route(garder) {
     : page === 'lignes' ? pageLignes(arg.toUpperCase()) : page === 'video' ? pageVideo() : pageAccueil());
   $('#app').classList.toggle('large', page === 'video');
   if (page === 'video') monterTirs();
+  if (page === 'fiche' || page === 'equipe') monterZones(page === 'equipe' ? ab : '');
   const cur = page === 'equipe' ? (ab === ME ? 'equipe' : '') : page;
   document.querySelectorAll('nav a').forEach(a => a.classList.toggle('on', a.dataset.nav === cur));
   $('#team-select').value = page === 'equipe' && ab !== ME ? ab : '';

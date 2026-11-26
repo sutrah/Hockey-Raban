@@ -103,6 +103,9 @@ details.sous { margin-top: 12px; } details.sous > summary { font-size: 14px; col
 .ptc.v { border-color: var(--rouge); } .ptc.v .ic { color: var(--bad); }
 .ptc.a { border-color: var(--ambre); } .ptc.a .ic { color: var(--ambre); }
 details.plus summary { cursor: pointer; font-size: 12px; color: var(--accent); margin-top: 2px; }
+.zt-c { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 0 0 10px; }
+.zt-f { margin: 0; } .zt-f svg { width: 100%; height: auto; display: block; } .zt-f figcaption { font-size: 12.5px; color: var(--ink2); text-align: center; margin-top: 2px; }
+.zt .pts { margin-bottom: 8px; } .zt .pts { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
 .ptc p.suite { margin-top: 4px; font-size: 12.5px; color: var(--ink2); }
 /* barres joueurs */
 .bj-r { display: grid; grid-template-columns: minmax(150px, 1.2fr) 2fr 28px; gap: 10px; align-items: center; padding: 3px 0; font-size: 13px; }
@@ -158,6 +161,10 @@ textarea.notes { width: 100%; min-height: 90px; font: inherit; color: var(--ink)
   h1, h2, h3, summary, .legend { break-after: avoid; } thead { display: table-header-group; }
   .tiles { gap: 6px; margin-bottom: 8px; } .tile { padding: 6px 8px; }
   .ptc p.suite { font-size: 10px; margin-top: 2px; }
+  .zt { padding: 6px 8px; } .zt h2 { margin-bottom: 2px; } .zt-c { grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 4px; }
+  .zt-f svg { max-height: 34mm; } .zt-f figcaption { font-size: 9px; margin: 0; }
+  .zt .pts { grid-template-columns: 1fr 1fr; gap: 3px 6px; } .zt .ptc { padding: 2px 6px; } .zt .ptc b { font-size: 10px; } .zt .ptc p { font-size: 9.5px; margin: 0; }
+  .zt .note { font-size: 8.5px; margin-top: 2px; }
   .grid2 { gap: 8px; margin-bottom: 8px; grid-template-columns: 1fr 1fr; }
   h1 { font-size: 18px; } h2 { font-size: 13px; margin-bottom: 4px; }
   .tile b { font-size: 16px; }

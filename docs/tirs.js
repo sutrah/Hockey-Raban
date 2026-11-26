@@ -3,21 +3,32 @@
 // data = { maj, matchs: [{ id, date, dom, ext, taille, domicile, buts: [...] }] }
 window.TirsBrest = function (el, data) {
   'use strict';
+  const donneesInit = data;
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const fr = x => x.toFixed(1).replace('.', ',');
   const jj = d => d.slice(8, 10) + '/' + d.slice(5, 7);
   const hm = s => s == null ? '' : Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
   const tiers = p => p > 3 ? 'Prol.' : 'P' + p;
-  const SIT = [['EG', 'Égalité', '#c62828'], ['SUP', 'Supériorité adverse', '#d97000'], ['INF', 'Infériorité adverse', '#7b1fa2']];
+  const SIT = [['EG', 'Égalité', '#c62828'], ['SUP', 'Supériorité du tireur', '#d97000'], ['INF', 'Infériorité du tireur', '#7b1fa2']];
   const sit = b => SIT.find(s => (b.situation || '').startsWith(s[0])) || SIT[0];
+  // plusieurs analyses possibles (buts encaissés par Brest, marqués par Luxembourg…) : une seule affichée à la fois
+  const cle = m => { const a = m.analyse || { equipe: 'BRE', nom: 'BREST', sens: 'encaisses' }; return a.equipe + '|' + a.sens; };
+  const AN = [...new Map(data.matchs.map(m => [cle(m), m.analyse || { equipe: 'BRE', nom: 'BREST', sens: 'encaisses' }])).entries()];
+  const nomEq = n => n === 'BREST' ? 'Brest' : n.charAt(0) + n.slice(1).toLowerCase();
+  const titreAn = a => `Buts ${a.sens === 'marques' ? 'marqués' : 'encaissés'} par ${nomEq(a.nom)}`;
+  const choix = new URLSearchParams(location.hash.split('?')[1] || '').get('analyse');
+  const A = (AN.find(x => x[0] === choix) || AN[0]);
+  const EQ = A[1];
+  data = { ...data, matchs: data.matchs.filter(m => cle(m) === A[0]) };
+  const NE = nomEq(EQ.nom);
   let n = 0;
   const tous = data.matchs.flatMap(m => m.buts.map(b => ({ ...b, m, num: ++n })));
   const uniq = k => [...new Set(tous.map(b => b[k]).filter(Boolean))].sort();
   const sel = (id, lab, opts) => `<label>${lab}<select data-f="${id}"><option value="">${id === 'match' ? 'Tous les matchs' : 'Tous'}</option>${opts.map(o => `<option value="${esc(o[0])}">${esc(o[1])}</option>`).join('')}</select></label>`;
   const adv = m => (m.domicile ? m.ext : m.dom);
-  el.innerHTML = `<div class="tb"><h1>Buts encaissés : d’où partent les tirs</h1>
-  <p class="sub">Albatros de Brest, saison 2026-27. Chaque point est le départ du tir, la cage de Brest est en haut.</p>
-  <div class="tb-f">${sel('match', 'Match', data.matchs.map(m => [m.id, `${jj(m.date)} ${m.domicile ? 'Brest – ' + adv(m) : adv(m) + ' – Brest'}${m.buts.some(b => b.distance != null) ? '' : ' (à placer)'}`]))}
+  el.innerHTML = `<div class="tb"><h1>${titreAn(EQ)} : d’où partent les tirs</h1>
+  <p class="sub">Saison 2026-27. Chaque point est le départ du tir, la cage ${EQ.sens === 'marques' ? 'visée' : 'de ' + NE} est en haut.</p>
+  <div class="tb-f">${AN.length > 1 ? `<label>Analyse<select data-an>${AN.map(x => `<option value="${x[0]}"${x[0] === A[0] ? ' selected' : ''}>${titreAn(x[1])}</option>`).join('')}</select></label>` : ''}${sel('match', 'Match', data.matchs.map(m => [m.id, `${jj(m.date)} ${m.domicile ? NE + ' – ' + adv(m) : adv(m) + ' – ' + NE}${m.buts.some(b => b.distance != null) ? '' : ' (à placer)'}`]))}
   ${sel('lieu', 'Lieu', [['d', 'Domicile'], ['e', 'Extérieur']])}${sel('per', 'Tiers', [[1, '1er'], [2, '2e'], [3, '3e'], [4, 'Prolongation']])}
   ${sel('sit', 'Situation', SIT.map(s => [s[0], s[1]]))}${sel('gar', 'Gardien', uniq('gardien').map(g => [g, g]))}
   ${sel('ges', 'Geste', uniq('geste').map(g => [g, g]))}${sel('act', 'Action', uniq('action').map(g => [g, g]))}
@@ -35,7 +46,7 @@ window.TirsBrest = function (el, data) {
   function montrer(b, g) {
     const t = b.temps != null ? b.temps : b.reste != null ? b.periode * 1200 - b.reste : null;
     const quand = b.periode > 3 ? 'Prolongation' : `${b.periode === 1 ? '1er' : b.periode + 'e'} tiers`;
-    tip.innerHTML = `<b>${esc(b.buteur)}</b><span>${b.m.domicile ? 'Brest – ' + esc(adv(b.m)) : esc(adv(b.m)) + ' – Brest'}, ${jj(b.m.date)}</span>
+    tip.innerHTML = `<b>${esc(b.buteur)}</b><span>${b.m.domicile ? NE + ' – ' + esc(adv(b.m)) : esc(adv(b.m)) + ' – ' + NE}, ${jj(b.m.date)}</span>
     <span>${quand}${t != null ? `, ${rang(Math.floor(t / 60) + 1)} minute` : ''}${b.reste != null ? ` (chrono ${hm(b.reste)})` : ''}</span>`;
     tip.style.setProperty('--c', sit(b)[2]);
     tip.hidden = false;
@@ -47,6 +58,12 @@ window.TirsBrest = function (el, data) {
   const cacher = () => { tip.hidden = true; };
   addEventListener('scroll', cacher, { passive: true });
   el.addEventListener('click', e => { if (!e.target.closest('.tb-r g[data-n]')) cacher(); });
+  const sa = el.querySelector('[data-an]');
+  if (sa) sa.onchange = () => {
+    const h = location.hash.split('?')[0] || '#/video';
+    history.replaceState(null, '', h + '?analyse=' + encodeURIComponent(sa.value));
+    window.TirsBrest(el, donneesInit);
+  };
   el.querySelectorAll('[data-f]').forEach(s => { s.onchange = () => { V[s.dataset.f] = s.value; rendre(); }; });
   $('[data-raz]').onclick = () => { el.querySelectorAll('[data-f]').forEach(s => { s.value = ''; V[s.dataset.f] = ''; }); rendre(); };
 

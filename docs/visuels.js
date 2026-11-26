@@ -20,7 +20,7 @@ function rangs(a, nomA, b, nomB) {
 const ICONE = { e: '▲', v: '⚠', a: '➜', i: '•' };
 // court = true : seule la première phrase est visible, le reste se déplie
 const cartes = (l, type, court) => `<div class="pts">${l.map(([t, x]) => { const i = court ? x.search(/\. (?=[A-ZÀ-Ü])/) : -1, tete = i > 0 ? x.slice(0, i + 1) : x, suite = i > 0 ? x.slice(i + 2) : '';
-  return `<div class="ptc ${type}"><b><span class="ic">${ICONE[type]}</span> ${esc(t)}</b><p>${esc(tete)}</p>${suite ? `<details class="plus"><summary>détail</summary><p>${esc(suite)}</p></details>` : ''}</div>`; }).join('')}</div>`;
+  return `<div class="ptc ${type}"><b><span class="ic">${ICONE[type]}</span> ${esc(t)}</b><p>${esc(tete)}</p>${suite ? `<p class="suite">${esc(suite)}</p>` : ''}</div>`; }).join('')}</div>`;
 // accorde « 1 but(s) » en « 1 but » et « 3 but(s) » en « 3 buts »
 const accord = h => h.replace(/(\d+)((?:\s[^\d.;:,()<>]*?\(s\))+)/g, (m, n, r) => n + r.replace(/\(s\)/g, +n > 1 ? 's' : ''));
 

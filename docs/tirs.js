@@ -33,7 +33,7 @@ window.TirsBrest = function (el, data) {
   ${sel('sit', 'Situation', SIT.map(s => [s[0], s[1]]))}${sel('gar', 'Gardien', uniq('gardien').map(g => [g, g]))}
   ${sel('ges', 'Geste', uniq('geste').map(g => [g, g]))}${sel('act', 'Action', uniq('action').map(g => [g, g]))}
   <button type="button" data-raz>Effacer les filtres</button></div>
-  <div class="tb-t"></div>
+  <p class="tb-imp"></p><div class="tb-t"></div>
   <div class="tb-v"><div class="card tb-r"></div><div class="card tb-l"></div></div>
   <p class="note">Positions pointées à la main sur la vidéo, puis converties en mètres. Le halo est la marge d’erreur de la position ; les pastilles trop proches sont légèrement écartées pour rester lisibles. Sans halo et avec * dans le tableau : position ajustée à la main. Mis à jour le ${esc(data.maj)}.</p></div>`;
   const $ = s => el.querySelector(s), V = {};
@@ -103,6 +103,8 @@ window.TirsBrest = function (el, data) {
     cacher();
     const F = tous.filter(b => (!V.match || String(b.m.id) === V.match) && (!V.lieu || b.m.domicile === (V.lieu === 'd')) && (!V.per || b.periode === +V.per)
       && (!V.sit || sit(b)[0] === V.sit) && (!V.gar || b.gardien === V.gar) && (!V.ges || b.geste === V.ges) && (!V.act || b.action === V.act));
+    const choisis = [...el.querySelectorAll('[data-f]')].filter(s => s.value).map(s => s.closest('label').firstChild.textContent + ' : ' + s.selectedOptions[0].text);
+    $('.tb-imp').textContent = 'Filtres : ' + (choisis.length ? choisis.join(' · ') : 'aucun (tous les buts)');
     const L = F.filter(b => b.distance != null), d = L.map(b => b.distance).sort((a, b) => a - b), k = d.length;
     const med = k ? (k % 2 ? d[(k - 1) / 2] : (d[k / 2 - 1] + d[k / 2]) / 2) : null, pres = d.filter(x => x < 5).length;
     $('.tb-t').innerHTML = `<div class="tiles"><div class="tile"><b>${k} <small style="display:inline">sur ${F.length}</small></b><span>buts placés sur la carte</span></div>

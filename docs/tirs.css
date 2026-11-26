@@ -18,4 +18,16 @@
 .tb-leg i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; }
 main.large { max-width: 1400px; }
 @media (max-width: 900px) { .tb-v { grid-template-columns: minmax(0, 1fr); } }
-@media print { .tb-tip, .tb-f, .top, .foot { display: none; } .tb-v { grid-template-columns: 5fr 7fr; } @page { size: A4 landscape; margin: 10mm; } }
+.tb-imp { display: none; }
+@media print {
+  .tb-tip, .tb-f, .top, .foot, #tirs ~ details { display: none; }
+  .tb-imp { display: block; font-size: 10px; color: #333; margin: -6px 0 6px; }
+  .tb h1 { font-size: 16px; } .tb .sub { font-size: 10px; margin-bottom: 4px; }
+  .tb-v { grid-template-columns: 78mm minmax(0, 1fr); gap: 6px; }
+  .tb-v .card { padding: 4px; } .tb-r { break-inside: avoid; } .tb-r svg { max-height: 82mm; }
+  .tb-leg { font-size: 9px; gap: 2px 8px; margin-top: 2px; }
+  .tb-l table { font-size: 8.6px; } .tb-l th, .tb-l td { padding: 1.5px 3px; } .tb-p { min-width: 16px; padding: 0 2px; font-size: 8.6px; }
+  .tb-l td small { font-size: 7.5px; }
+  .tb .tile b { font-size: 13px; } .tb .tile span { font-size: 9px; }
+  .tb .note { font-size: 8.5px; }
+}

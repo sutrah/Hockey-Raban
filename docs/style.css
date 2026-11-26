@@ -103,6 +103,7 @@ details.sous { margin-top: 12px; } details.sous > summary { font-size: 14px; col
 .ptc.v { border-color: var(--rouge); } .ptc.v .ic { color: var(--bad); }
 .ptc.a { border-color: var(--ambre); } .ptc.a .ic { color: var(--ambre); }
 details.plus summary { cursor: pointer; font-size: 12px; color: var(--accent); margin-top: 2px; }
+.ptc p.suite { margin-top: 4px; font-size: 12.5px; color: var(--ink2); }
 /* barres joueurs */
 .bj-r { display: grid; grid-template-columns: minmax(150px, 1.2fr) 2fr 28px; gap: 10px; align-items: center; padding: 3px 0; font-size: 13px; }
 .bj-l small { display: inline-block; min-width: 20px; color: var(--muted); }
@@ -143,7 +144,8 @@ textarea.notes { width: 100%; min-height: 90px; font: inherit; color: var(--ink)
     --border: #bbb; --pour: #2a78d6; --contre: #eb6834; --good: #006300; --bad: #b42323; --accent: #000; }
   .top nav, .foot, #tip, .seg, .btn, .choix, details.sous > summary, .badge { display: none; }
   .ptc, .rg-t i { -webkit-print-color-adjust: exact; print-color-adjust: exact; } .dot, .bj-b i, .bl i, .vd-b i, .dl i { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  details.plus { display: none; }
+  @page { size: A4 portrait; margin: 10mm 9mm; }
+  details > summary { list-style: none; } details > summary::-webkit-details-marker { display: none; }
   .fiche .card:has(textarea.notes) { display: none; }
   .fiche .grid2 { margin-bottom: 6px; gap: 6px; } .fiche .ptc { padding: 4px 8px; } .fiche h1 { margin: 0; } .fiche .sub { margin-bottom: 6px; }
   .fiche .rg { padding: 1px 0; } .fiche .bj-r { padding: 1px 0; } .pts { gap: 4px; } h3 { margin: 6px 0 4px; }
@@ -151,7 +153,11 @@ textarea.notes { width: 100%; min-height: 90px; font: inherit; color: var(--ink)
   .top { position: static; border: 0; padding: 0 0 4px; }
   body { font-size: 11px; } main { padding: 0; max-width: none; }
   table { font-size: 10.5px; } th, td { padding: 2px 5px; }
-  .card, .tile { break-inside: avoid; padding: 8px 10px; margin-bottom: 8px; }
+  .card { break-inside: auto; padding: 8px 10px; margin-bottom: 8px; }
+  .tile, .ptc, .rg, .bj-r, .bl, .vd, tr, svg, .grid2 > .card:not(:has(table)) { break-inside: avoid; }
+  h1, h2, h3, summary, .legend { break-after: avoid; } thead { display: table-header-group; }
+  .tiles { gap: 6px; margin-bottom: 8px; } .tile { padding: 6px 8px; }
+  .ptc p.suite { font-size: 10px; margin-top: 2px; }
   .grid2 { gap: 8px; margin-bottom: 8px; grid-template-columns: 1fr 1fr; }
   h1 { font-size: 18px; } h2 { font-size: 13px; margin-bottom: 4px; }
   .tile b { font-size: 16px; }

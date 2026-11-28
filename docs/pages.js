@@ -141,6 +141,7 @@ function pageFiche(ab) {
       <p class="sub">${M ? `${dateFr(M.date)} à ${heure(M.date)} · ${dom ? 'à domicile' : 'à l\'extérieur'} · ${esc(M.patinoire || '')}` : 'Pas de match programmé entre les deux équipes'}${rg(O) ? ` · ${esc(eq.nom_court)} ${rg(O)}<sup>e</sup>, ${esc(D.eq[me].nom_court)} ${rg(me)}<sup>e</sup> de la poule` : ''}</p>
       ${blocPoints(k)}
       <div class="card zt" id="zones" data-o="${eq.abreviation}"></div>
+      <div class="card fc" id="forecheck" data-o="${eq.abreviation}"></div>
       <div class="grid2"><div class="card">${h2('Nous contre eux', 'mesuré', `${profil(me).n} et ${Q.n} matchs`)}${rangs(comparer(me).filter(c => !/^(t2|premier|provm)/.test(c.k)), D.eq[me].nom_court, comparer(O), eq.nom_court)}</div>
       <div class="card">${h2('Leurs joueurs à surveiller', 'mesuré')}${barresJoueurs(top, x => fleche(F, x.id))}
         ${g[0] ? `<p class="lg"><b>Gardien :</b> ${g.slice(0, 2).map(x => `${esc(nomJ(x.id))}, ${x.tit} titularisation(s), ${f1(x.enc * 3600 / x.sec)} buts encaissés par match`).join(' ; ')}.</p>` : ''}</div></div>
@@ -268,6 +269,31 @@ function monterZones(ab) {
     ZonesTir.fiche(el, d, D.eq[me].abreviation, D.eq[me].nom_court, O, D.ab[O] ? D.ab[O].nom_court : O);
   });
 }
+function monterForecheck(ab) {
+  let el = $('#forecheck');
+  if (!el && ab && D.ab[ab]) {                          // fiche équipe : encart ajouté avant « Lignes probables »
+    el = document.createElement('div');
+    el.className = 'card fc'; el.id = 'forecheck';
+    const ref = [...document.querySelectorAll('#app .card')].find(c => /Lignes probables/.test(c.textContent.slice(0, 40)));
+    ref ? ref.before(el) : $('#app').append(el);
+  }
+  if (!el || !window.Forecheck) return;
+  const O = ab || el.dataset.o;
+  Forecheck.donnees().then(d => {
+    if (!document.body.contains(el)) return;
+    if (!d || !d.equipes || !d.equipes[O]) {
+      if ($('#app .fc-seul')) el.innerHTML = '<p class="muted">Pas encore d\'analyse du forecheck pour cette équipe.</p>'; else el.remove();
+      return;
+    }
+    Forecheck.rendre(el, d, O, D.ab[O] ? D.ab[O].nom_court : O, D.eq[moi()].nom_court);
+  });
+}
+function pageForecheck(ab) {
+  const O = ab && D.ab[ab] ? ab : '';
+  return `<div class="fc-seul"><p class="sur">Analyse vidéo</p><h1>Forecheck${O ? ' de ' + esc(D.ab[O].nom_court) : ''}</h1>
+    <p class="sub">Comment l'équipe met la pression quand l'adversaire relance depuis sa zone.${O ? ` <a href="#/fiche/${O}">Fiche de match complète →</a>` : ''}</p>
+    <div class="card fc" id="forecheck" data-o="${O}"></div></div>`;
+}
 function monterTirs() {
   fetch('data/buts.json', { cache: 'no-cache' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(d => { const el = $('#tirs'); if (el) TirsBrest(el, d); })
@@ -294,10 +320,11 @@ function route(garder) {
   if (page !== 'equipe') FILTRE = 'saison';
   const ab = page === 'equipe' ? arg.toUpperCase() : '';
   $('#app').innerHTML = accord(page === 'equipe' ? pageEquipe(ab) : page === 'fiche' ? pageFiche(arg.toUpperCase()) : page === 'debrief' ? pageDebrief(+arg || 0)
-    : page === 'lignes' ? pageLignes(arg.toUpperCase()) : page === 'video' ? pageVideo() : pageAccueil());
+    : page === 'lignes' ? pageLignes(arg.toUpperCase()) : page === 'video' ? pageVideo() : page === 'forecheck' ? pageForecheck(arg.toUpperCase()) : pageAccueil());
   $('#app').classList.toggle('large', page === 'video');
   if (page === 'video') monterTirs();
   if (page === 'fiche' || page === 'equipe') monterZones(page === 'equipe' ? ab : '');
+  if (page === 'fiche' || page === 'equipe' || page === 'forecheck') monterForecheck(page === 'fiche' ? '' : (page === 'forecheck' ? arg.toUpperCase() : ab));
   const cur = page === 'equipe' ? (ab === ME ? 'equipe' : '') : page;
   document.querySelectorAll('nav a').forEach(a => a.classList.toggle('on', a.dataset.nav === cur));
   $('#team-select').value = page === 'equipe' && ab !== ME ? ab : '';

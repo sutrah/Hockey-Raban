@@ -103,6 +103,11 @@ details.sous { margin-top: 12px; } details.sous > summary { font-size: 14px; col
 .ptc.v { border-color: var(--rouge); } .ptc.v .ic { color: var(--bad); }
 .ptc.a { border-color: var(--ambre); } .ptc.a .ic { color: var(--ambre); }
 details.plus summary { cursor: pointer; font-size: 12px; color: var(--accent); margin-top: 2px; }
+.fc-t { margin-bottom: 10px; } .fc-t .tile b { font-size: 19px; }
+.fc-g { display: grid; grid-template-columns: minmax(200px, 2fr) minmax(0, 3fr); gap: 14px; align-items: start; margin-bottom: 10px; }
+.fc-sch { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; } .fc-sch figure { margin: 0; } .fc-sch figcaption { font-size: 12.5px; text-align: center; color: var(--ink2); }
+.fc-s { width: 100%; height: auto; display: block; background: #eef4fb; border-radius: 6px; } .fc-tab { display: grid; gap: 8px; min-width: 0; }
+@media (max-width: 700px) { .fc-g { grid-template-columns: minmax(0, 1fr); } }
 .zt-c { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 0 0 10px; }
 .zt-f { margin: 0; } .zt-f svg { width: 100%; height: auto; display: block; } .zt-f figcaption { font-size: 12.5px; color: var(--ink2); text-align: center; margin-top: 2px; }
 .zt .pts { margin-bottom: 8px; } .zt .pts { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
@@ -165,6 +170,7 @@ textarea.notes { width: 100%; min-height: 90px; font: inherit; color: var(--ink)
   .zt-f svg { max-height: 34mm; } .zt-f figcaption { font-size: 9px; margin: 0; }
   .zt .pts { grid-template-columns: 1fr 1fr; gap: 3px 6px; } .zt .ptc { padding: 2px 6px; } .zt .ptc b { font-size: 10px; } .zt .ptc p { font-size: 9.5px; margin: 0; }
   .zt .note { font-size: 8.5px; margin-top: 2px; }
+  .fc { break-inside: avoid; padding: 6px 8px; } .fc .tile { padding: 4px 6px; } .fc-t .tile b { font-size: 13px; } .fc-s { max-height: 30mm; } .fc .ptc p { font-size: 9.5px; margin: 0; } .fc .pts { grid-template-columns: 1fr 1fr; gap: 3px 6px; }
   .grid2 { gap: 8px; margin-bottom: 8px; grid-template-columns: 1fr 1fr; }
   h1 { font-size: 18px; } h2 { font-size: 13px; margin-bottom: 4px; }
   .tile b { font-size: 16px; }

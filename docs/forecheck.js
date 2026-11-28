@@ -7,20 +7,28 @@ window.Forecheck = (function () {
   const nomP = s => s.charAt(0) + s.slice(1).toLowerCase();
   const T = ['', '1er', '2e', '3e'];
   // schémas types (pas des positions mesurées) : zone vue de dessus, ligne de but à gauche, ligne bleue à droite
+  // équipe qui relance : porteur derrière la cage, défenseur au coin opposé, un attaquant à la bande
+  const ADV = [[-.6, -2.2], [1.5, 8.5], [8, -12.5]];
   const POS = {
     '1-2-2': [[2.6, -3.6, 1], [10, -11], [10, 11], [17, -6], [17, 6]],
     '2-1-2': [[2.6, -3.6], [4, 7], [10, 0], [17, -6], [17, 6]],
     '1-3-1': [[2.6, -3.6], [10, -10], [10, 0], [10, 10], [17, 0]],
   };
+  // demi-patinoire vue de dessus, cage en haut, jusqu'à la ligne rouge : x = 15 + latéral, y = 4 + profondeur (m)
   function schema(sy) {
     const p = POS[sy];
     if (!p) return '';
-    return `<svg viewBox="-1 -16 22 32" role="img" aria-label="Schéma ${esc(sy)}" class="fc-s">
-      <path d="M0 -15V15" stroke="#d33" stroke-width=".25"/><path d="M18.86 -15V15" stroke="#27c" stroke-width=".45"/>
-      <path d="M0 -1.83A1.83 1.83 0 0 1 0 1.83" fill="none" stroke="#27c" stroke-width=".12"/>
-      <circle cx="6" cy="-7" r="4.5" fill="none" stroke="#d33" stroke-width=".12"/><circle cx="6" cy="7" r="4.5" fill="none" stroke="#d33" stroke-width=".12"/>
-      <circle cx="-.4" cy="-4" r=".75" fill="#e0701f"/><circle cx="2.5" cy="9" r=".75" fill="#e0701f"/><circle cx="7" cy="-10" r=".75" fill="#e0701f"/>
-      ${p.map(q => `<circle cx="${q[0]}" cy="${q[1]}" r=".85" fill="#1f4fa3"/>`).join('')}</svg>`;
+    const P = (q, c, r) => `<circle cx="${15 + q[1]}" cy="${4 + q[0]}" r="${r}" fill="${c}" stroke="#fff" stroke-width=".15"/>`;
+    const bord = 8.5 - Math.sqrt(8.5 ** 2 - 4.5 ** 2);
+    return `<svg viewBox="-.6 -.6 31.2 31.2" role="img" aria-label="Schéma ${esc(sy)}" class="fc-s">
+      <path d="M0 30V8.5A8.5 8.5 0 0 1 8.5 0H21.5A8.5 8.5 0 0 1 30 8.5V30Z" fill="#f4f8fd" stroke="#556" stroke-width=".25"/>
+      <path d="M${bord} 4H${30 - bord}" stroke="#d33" stroke-width=".18"/><path d="M0 22.86H30" stroke="#27c" stroke-width=".45"/>
+      <path d="M0 30H30" stroke="#d33" stroke-width=".45"/>
+      <path d="M13.17 4A1.83 1.83 0 0 0 16.83 4Z" fill="#cfe4ff" stroke="#27c" stroke-width=".12"/><path d="M14.085 4V3H15.915V4" fill="none" stroke="#d33" stroke-width=".22"/>
+      <circle cx="8" cy="10" r="4.5" fill="none" stroke="#d33" stroke-width=".14"/><circle cx="22" cy="10" r="4.5" fill="none" stroke="#d33" stroke-width=".14"/>
+      <circle cx="8" cy="10" r=".3" fill="#d33"/><circle cx="22" cy="10" r=".3" fill="#d33"/><circle cx="8" cy="24.4" r=".3" fill="#d33"/><circle cx="22" cy="24.4" r=".3" fill="#d33"/>
+      <path d="M10.5 30A4.5 4.5 0 0 1 19.5 30" fill="none" stroke="#27c" stroke-width=".14"/>
+      ${ADV.map(q => P(q, '#e0701f', .8)).join('')}${p.map(q => P(q, '#1f4fa3', .9)).join('')}</svg>`;
   }
   function pistes(d, nom, nous) {
     const r = [], n = d.n, sy = Object.fromEntries(d.systemes), ht = Object.fromEntries(d.hauteur);

@@ -104,7 +104,7 @@ details.sous { margin-top: 12px; } details.sous > summary { font-size: 14px; col
 .ptc.a { border-color: var(--ambre); } .ptc.a .ic { color: var(--ambre); }
 details.plus summary { cursor: pointer; font-size: 12px; color: var(--accent); margin-top: 2px; }
 .fc-t { margin-bottom: 10px; } .fc-t .tile b { font-size: 19px; }
-.fc-g { display: grid; grid-template-columns: minmax(200px, 2fr) minmax(0, 3fr); gap: 14px; align-items: start; margin-bottom: 10px; }
+.fc-g { display: grid; grid-template-columns: minmax(260px, 2fr) minmax(0, 3fr); gap: 14px; align-items: start; margin-bottom: 10px; }
 .fc-sch { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; } .fc-sch figure { margin: 0; } .fc-sch figcaption { font-size: 12.5px; text-align: center; color: var(--ink2); }
 .fc-s { width: 100%; height: auto; display: block; background: #eef4fb; border-radius: 6px; } .fc-tab { display: grid; gap: 8px; min-width: 0; }
 @media (max-width: 700px) { .fc-g { grid-template-columns: minmax(0, 1fr); } }

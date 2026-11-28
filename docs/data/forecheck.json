@@ -1,0 +1,150 @@
+{
+ "maj": "28/11/2026 15:23",
+ "equipes": {
+  "LUX": {
+   "matchs": [
+    {
+     "id": 84394,
+     "date": "2026-11-21",
+     "adversaire": "CHÂLONS-EN-CHAMPAGNE",
+     "n": 85
+    }
+   ],
+   "n": 85,
+   "systemes": [
+    [
+     "1-2-2",
+     63
+    ],
+    [
+     "2-1-2",
+     21
+    ],
+    [
+     "attente en zone neutre",
+     1
+    ]
+   ],
+   "hauteur": [
+    [
+     "moyenne",
+     39
+    ],
+    [
+     "haute (dans le coin)",
+     34
+    ],
+    [
+     "basse (repli)",
+     12
+    ]
+   ],
+   "tiers": {
+    "1": {
+     "n": 28,
+     "systemes": [
+      [
+       "1-2-2",
+       20
+      ],
+      [
+       "2-1-2",
+       7
+      ],
+      [
+       "attente en zone neutre",
+       1
+      ]
+     ],
+     "hauteur": [
+      [
+       "moyenne",
+       16
+      ],
+      [
+       "haute (dans le coin)",
+       11
+      ],
+      [
+       "basse (repli)",
+       1
+      ]
+     ]
+    },
+    "2": {
+     "n": 35,
+     "systemes": [
+      [
+       "1-2-2",
+       26
+      ],
+      [
+       "2-1-2",
+       9
+      ]
+     ],
+     "hauteur": [
+      [
+       "haute (dans le coin)",
+       17
+      ],
+      [
+       "moyenne",
+       11
+      ],
+      [
+       "basse (repli)",
+       7
+      ]
+     ]
+    },
+    "3": {
+     "n": 22,
+     "systemes": [
+      [
+       "1-2-2",
+       17
+      ],
+      [
+       "2-1-2",
+       5
+      ]
+     ],
+     "hauteur": [
+      [
+       "moyenne",
+       12
+      ],
+      [
+       "haute (dans le coin)",
+       6
+      ],
+      [
+       "basse (repli)",
+       4
+      ]
+     ]
+    }
+   },
+   "efficacite": {
+    "1-2-2": {
+     "n": 63,
+     "sortie": 47,
+     "perte": 12,
+     "degagement": 2,
+     "inconnu": 2
+    },
+    "2-1-2": {
+     "n": 21,
+     "sortie": 14,
+     "perte": 5,
+     "inconnu": 2
+    },
+    "attente en zone neutre": {
+     "n": 1,
+     "perte": 1
+    }
+   }
+  }
+ }
+}

@@ -279,13 +279,14 @@ function monterForecheck(ab) {
   }
   if (!el || !window.Forecheck) return;
   const O = ab || el.dataset.o;
-  Forecheck.donnees().then(d => {
+  Promise.all([Forecheck.donnees(), window.ZonesTir ? ZonesTir.donnees() : null]).then(([d, z]) => {
     if (!document.body.contains(el)) return;
     if (!d || !d.equipes || !d.equipes[O]) {
       if ($('#app .fc-seul')) el.innerHTML = '<p class="muted">Pas encore d\'analyse du forecheck pour cette équipe.</p>'; else el.remove();
       return;
     }
-    Forecheck.rendre(el, d, O, D.ab[O] ? D.ab[O].nom_court : O, D.eq[moi()].nom_court);
+    const buts = z ? z.matchs.filter(m => m.analyse && m.analyse.equipe === O && m.analyse.sens === 'marques').flatMap(m => m.buts.filter(b => b.distance != null)) : null;
+    Forecheck.rendre(el, d, O, D.ab[O] ? D.ab[O].nom_court : O, D.eq[moi()].nom_court, buts);
   });
 }
 function pageForecheck(ab) {

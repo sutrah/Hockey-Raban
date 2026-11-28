@@ -30,7 +30,7 @@ window.Forecheck = (function () {
       <path d="M10.5 30A4.5 4.5 0 0 1 19.5 30" fill="none" stroke="#27c" stroke-width=".14"/>
       ${ADV.map(q => P(q, '#e0701f', .8)).join('')}${p.map(q => P(q, '#1f4fa3', .9)).join('')}</svg>`;
   }
-  function pistes(d, nom, nous) {
+  function pistes(d, nom, nous, buts) {
     const r = [], n = d.n, sy = Object.fromEntries(d.systemes), ht = Object.fromEntries(d.hauteur);
     const p122 = (sy['1-2-2'] || 0) / n, p212 = (sy['2-1-2'] || 0) / n, p131 = (sy['1-3-1'] || 0) / n;
     if (p122 >= .5) r.push(['Battre le premier joueur', `En 1-2-2 (${pc(sy['1-2-2'], n)}), un seul joueur de ${nom} vient sur le porteur : relance rapide avant son arrivée, ou changement de côté derrière la cage, et les deux joueurs de bande sont pris à contre-pied.`]);
@@ -43,19 +43,28 @@ window.Forecheck = (function () {
       if (!best || h / t.n > best.r) best = { p, r: h / t.n, h, n: t.n };
     }
     const hg = (ht['haute (dans le coin)'] || 0) / n;
-    if (best && best.r >= hg + .08) r.push([`${T[best.p]} tiers : simple et sûr`, `${nom} presse plus haut au ${T[best.p]} tiers (${best.h} fois sur ${best.n} jusque dans le coin). Sortir le palet vite, éviter le jeu risqué derrière la cage${best.p === '2' ? ', présences courtes (le banc est loin)' : ''}.`]);
+    // buts de l'équipe par tiers (carte des tirs) : le tiers où elle presse le plus haut est-il aussi celui où elle marque le plus ?
+    let marque = '';
+    if (best && buts && buts.length >= 8) {
+      const parT = [1, 2, 3].map(p => buts.filter(b => b.periode === p).length), mx = Math.max(...parT);
+      if (parT[best.p - 1] === mx) marque = ` C'est aussi le tiers où ${nom} marque le plus (${mx} de ses ${buts.length} buts placés sur la carte).`;
+    }
+    if (best && best.r >= hg + .08) r.push([`${T[best.p]} tiers : simple et sûr`, `${nom} presse plus haut au ${T[best.p]} tiers (${best.h} fois sur ${best.n} jusque dans le coin).${marque} Sortir le palet vite, éviter le jeu risqué derrière la cage${best.p === '2' ? ', présences courtes (le banc est loin)' : ''}.`]);
     const tot = Object.values(d.efficacite).reduce((a, e) => ({ s: a.s + (e.sortie || 0), n: a.n + e.n }), { s: 0, n: 0 });
-    if (tot.n >= 10) r.push([tot.s / tot.n >= .65 ? 'Un forecheck qui gêne peu' : 'Un forecheck qui gêne', `L'adversaire est sorti proprement de sa zone ${pc(tot.s, tot.n)} du temps face à ${nom}.`]);
+    const e1 = d.efficacite['1-2-2'], e2 = d.efficacite['2-1-2'];
+    const comp = e1 && e2 && e2.n >= 8 && e1.n >= 8 && (e2.perte || 0) / e2.n > (e1.perte || 0) / e1.n + .03
+      ? ` Le 2-1-2, plus agressif, provoque un peu plus de pertes (${pc(e2.perte || 0, e2.n)} contre ${pc(e1.perte || 0, e1.n)} en 1-2-2), mais sur ${e2.n} cas seulement.` : '';
+    if (tot.n >= 10) r.push([tot.s / tot.n >= .65 ? 'Un forecheck qui gêne peu' : 'Un forecheck qui gêne', `L'adversaire est sorti proprement de sa zone ${pc(tot.s, tot.n)} du temps face à ${nom} (${tot.s} fois sur ${tot.n}).${comp}`]);
     return r;
   }
-  function rendre(el, data, ab, nom, nous) {
+  function rendre(el, data, ab, nom, nous, buts) {
     const d = data && data.equipes && data.equipes[ab];
     if (!d || !d.n) { el.remove(); return; }
     const n = d.n, sy = d.systemes, ht = d.hauteur;
     const haut = ht.filter(([h]) => !/basse/.test(h)).reduce((a, [, x]) => a + x, 0);
     const eff = Object.entries(d.efficacite).sort((a, b) => b[1].n - a[1].n);
     const tot = eff.reduce((a, [, e]) => ({ s: a.s + (e.sortie || 0), n: a.n + e.n }), { s: 0, n: 0 });
-    const P = pistes(d, nomP(nom), nous);
+    const P = pistes(d, nomP(nom), nous, buts);
     el.innerHTML = `<h2>Forecheck de ${esc(nomP(nom))} <span class="badge b-p">partiel</span> <small class="muted">vidéo</small></h2>
       <div class="tiles fc-t"><div class="tile"><b>${n}</b><span>forechecks vérifiés</span></div>
         <div class="tile"><b>${esc(sy[0][0])} ${pc(sy[0][1], n)}</b><span>système principal</span></div>
